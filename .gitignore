@@ -1,0 +1,23 @@
+# ビルド成果物
+dist/
+ralph
+ralph.exe
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# エディタ
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 環境変数
+.env
+.env.local

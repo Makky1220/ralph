@@ -1,0 +1,19 @@
+# ralph プロジェクト設定
+# このファイルは `ralph init` が生成する。手動で編集して構わない。
+
+[project]
+# プロジェクト名（PR タイトルやドキュメントで使用）
+name = "{{.ProjectName}}"
+
+# 有効な言語パック（ralph pack add <lang> で追加）
+packs = []
+
+[hooks]
+# フックを有効にするかどうか（デフォルト: true）
+enabled = true
+
+[pipeline]
+# ポストパイプラインを自動実行するかどうか
+auto_run = true
+# ポストパイプラインのステップ（順序固定）
+steps = ["self-review", "verify", "test", "sync-docs", "pr"]
