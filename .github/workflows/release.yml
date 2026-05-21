@@ -23,6 +23,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Debug - show working directory
+        run: pwd && ls -la && ls -la cmd/
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
