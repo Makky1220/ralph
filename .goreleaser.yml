@@ -8,7 +8,7 @@ before:
 
 builds:
   - id: ralph
-    main: ./cmd/ralph
+    dir: cmd/ralph
     binary: ralph
     env:
       - CGO_ENABLED=0
