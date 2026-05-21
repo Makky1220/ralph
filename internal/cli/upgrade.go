@@ -314,18 +314,6 @@ func splitManifestForBase(m *scaffold.Manifest) *scaffold.Manifest {
 	return out
 }
 
-func splitManifestForPack(m *scaffold.Manifest, pack string) *scaffold.Manifest {
-	out := scaffold.NewManifest(m.Meta.Version)
-	out.Meta = m.Meta
-	out.Files = make(map[string]scaffold.ManifestFile)
-	for _, p := range packManagedPaths(pack) {
-		if v, ok := m.Files[p]; ok {
-			out.Files[p] = v
-		}
-	}
-	return out
-}
-
 func preservePackState(src *scaffold.Manifest, pack string, dst map[string]scaffold.ManifestFile) {
 	for _, p := range packManagedPaths(pack) {
 		if v, ok := src.Files[p]; ok {

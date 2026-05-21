@@ -16,13 +16,6 @@ func packVerifyRelPath(lang string) string {
 	return filepath.Join("scripts", "verify-"+lang+".sh")
 }
 
-// packRenderSkipPaths lists files handled via explicit mapping rather than bulk render.
-var packRenderSkipPaths = map[string]bool{
-	"rule.md":   true,
-	"verify.sh": true,
-	"README.md": true,
-}
-
 func packRuleContent(packFS fs.FS) ([]byte, bool, error) {
 	content, err := fs.ReadFile(packFS, "rule.md")
 	if err != nil {
