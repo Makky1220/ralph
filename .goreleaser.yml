@@ -68,6 +68,20 @@ changelog:
     - title: "その他"
       order: 999
 
+brews:
+  - name: ralph
+    repository:
+      owner: thomas0124
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/thomas0124/ralph"
+    description: "CLI tool to bootstrap and manage Claude Code harness configuration for your projects"
+    license: "MIT"
+    install: |
+      bin.install "ralph"
+    test: |
+      system "#{bin}/ralph", "--version"
+
 release:
   github:
     owner: thomas0124
