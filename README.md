@@ -12,7 +12,7 @@ ralph version    # バージョン情報を表示
 
 ## インストール
 
-### Homebrew（予定）
+### Homebrew
 
 ```sh
 brew install thomas0124/tap/ralph
