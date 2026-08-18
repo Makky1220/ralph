@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,80 @@ func TestDefaultsLockStep(t *testing.T) {
 		t.Skipf("scripts/ralph-config.sh not found (%v) — skipping lock-step check (vendored repo?)", err)
 	}
 	shell := parseShellDefaults(t, shellPath)
+
+	// ── 2. ralph.toml defaults (via Go parser) ────────────────────────────────
+	tomlPath := filepath.Join(root, "templates", "base", "ralph.toml")
+	if _, err := os.Stat(tomlPath); err != nil {
+		t.Skipf("templates/base/ralph.toml not found (%v) — skipping lock-step check", err)
+	}
+	tomlCfg, err := Load(tomlPath)
+	if err != nil {
+		t.Fatalf("Load(templates/base/ralph.toml): %v", err)
+	}
+
+	// ── 3. Go Default() ───────────────────────────────────────────────────────
+	goCfg := Default()
+
+	// Helper: compare shell, toml, and Go values for one key.
+	check := func(label, shellVar, tomlVal, goVal string) {
+		t.Helper()
+		shellVal := mustShell(t, shell, shellVar)
+		if shellVal != goVal {
+			t.Errorf("lock-step mismatch for %s:\n  scripts/ralph-config.sh %s default = %q\n  config.Default() = %q",
+				label, shellVar, shellVal, goVal)
+		}
+		if tomlVal != goVal {
+			t.Errorf("lock-step mismatch for %s:\n  templates/base/ralph.toml = %q\n  config.Default() = %q",
+				label, tomlVal, goVal)
+		}
+		if shellVal != tomlVal {
+			t.Errorf("lock-step mismatch for %s:\n  scripts/ralph-config.sh %s default = %q\n  templates/base/ralph.toml = %q",
+				label, shellVar, shellVal, tomlVal)
+		}
+	}
+
+	// ── [org] envelope defaults ────────────────────────────────────────────────
+	// Shell vars are comma-joined strings (RALPH_ORG_DRIVER_POOL,
+	// RALPH_ORG_MODEL_POOL as "driver:model,driver:model,...") since shell has
+	// no native array type; the Go/TOML sides are canonicalized to the same
+	// joined form before comparing so the three surfaces line up textually.
+	check("org.driver_pool", "RALPH_ORG_DRIVER_POOL",
+		strings.Join(tomlCfg.Org.DriverPool, ","), strings.Join(goCfg.Org.DriverPool, ","))
+
+	formatOrgModelPool := func(entries []OrgModelPoolEntry) string {
+		parts := make([]string, len(entries))
+		for i, e := range entries {
+			parts[i] = e.Driver + ":" + e.Model
+		}
+		return strings.Join(parts, ",")
+	}
+	check("org.model_pool", "RALPH_ORG_MODEL_POOL",
+		formatOrgModelPool(tomlCfg.Org.ModelPool), formatOrgModelPool(goCfg.Org.ModelPool))
+
+	check("org.max_seats", "RALPH_ORG_MAX_SEATS",
+		strconv.Itoa(tomlCfg.Org.MaxSeats), strconv.Itoa(goCfg.Org.MaxSeats))
+	check("org.budget.seat_wall_clock_minutes", "RALPH_ORG_SEAT_BUDGET_MINUTES",
+		strconv.Itoa(tomlCfg.Org.Budget.SeatWallClockMinutes), strconv.Itoa(goCfg.Org.Budget.SeatWallClockMinutes))
+	check("org.budget.total_wall_clock_minutes", "RALPH_ORG_TOTAL_BUDGET_MINUTES",
+		strconv.Itoa(tomlCfg.Org.Budget.TotalWallClockMinutes), strconv.Itoa(goCfg.Org.Budget.TotalWallClockMinutes))
+	check("org.budget.max_fix_rounds", "RALPH_ORG_MAX_FIX_ROUNDS",
+		strconv.Itoa(tomlCfg.Org.Budget.MaxFixRounds), strconv.Itoa(goCfg.Org.Budget.MaxFixRounds))
+	check("org.deadman_minutes", "RALPH_ORG_DEADMAN_MINUTES",
+		strconv.Itoa(tomlCfg.Org.DeadmanMinutes), strconv.Itoa(goCfg.Org.DeadmanMinutes))
+	check("org.agmsg_home", "RALPH_ORG_AGMSG_HOME",
+		tomlCfg.Org.AgmsgHome, goCfg.Org.AgmsgHome)
+	check("org.permissions.default", "RALPH_ORG_PERMISSION_DEFAULT",
+		tomlCfg.Org.Permissions.Default, goCfg.Org.Permissions.Default)
+	check("org.permissions.codex_verified", "RALPH_ORG_PERMISSIONS_CODEX_VERIFIED",
+		strconv.FormatBool(tomlCfg.Org.Permissions.CodexVerified), strconv.FormatBool(goCfg.Org.Permissions.CodexVerified))
+	check("org.watchdog.interval_seconds", "RALPH_ORG_WATCHDOG_INTERVAL_SECONDS",
+		strconv.Itoa(tomlCfg.Org.Watchdog.IntervalSeconds), strconv.Itoa(goCfg.Org.Watchdog.IntervalSeconds))
+	check("org.watchdog.stall_minutes", "RALPH_ORG_WATCHDOG_STALL_MINUTES",
+		strconv.Itoa(tomlCfg.Org.Watchdog.StallMinutes), strconv.Itoa(goCfg.Org.Watchdog.StallMinutes))
+	check("org.watchdog.watcher_enabled", "RALPH_ORG_WATCHDOG_WATCHER_ENABLED",
+		strconv.FormatBool(tomlCfg.Org.Watchdog.WatcherEnabled), strconv.FormatBool(goCfg.Org.Watchdog.WatcherEnabled))
+	check("org.watchdog.watcher_model", "RALPH_ORG_WATCHDOG_WATCHER_MODEL",
+		tomlCfg.Org.Watchdog.WatcherModel, goCfg.Org.Watchdog.WatcherModel)
 
 	// ── cross-review SKILL.md fallback matches shell ──────────────────────────
 	// The SKILL.md documents: ${RALPH_CLAUDE_REVIEWER_MODEL:-opus}

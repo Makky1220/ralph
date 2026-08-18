@@ -13,9 +13,12 @@ var (
 
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "ralph",
-		Short:         "Claude Code harness scaffold and pipeline CLI",
-		Long:          `ralph scaffolds Claude Code projects with best-practice configurations, hooks, skills, and pipeline settings.`,
+		Use:   "ralph",
+		Short: "Harness engineering scaffold and org-runtime CLI",
+		Long: `ralph is a CLI tool for harness engineering.
+It scaffolds projects with best-practice Claude Code configurations,
+manages template updates, and coordinates autonomous multi-seat
+org-runtime execution (ralph org).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -24,9 +27,11 @@ func NewRootCmd() *cobra.Command {
 		newInitCmd(),
 		newUpgradeCmd(),
 		newDoctorCmd(),
+		newInsightsCmd(),
 		newPackCmd(),
 		newVersionCmd(),
-		newInsightsCmd(),
+		newStatusCmd(),
+		newOrgCmd(),
 	)
 
 	return root

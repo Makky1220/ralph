@@ -3,6 +3,8 @@ package insights
 import (
 	"maps"
 	"sort"
+
+	"github.com/thomas0124/ralph/internal/org"
 )
 
 // PhaseStats holds aggregated metrics for one pipeline phase.
@@ -261,12 +263,12 @@ func AggregateReceipts(receipts []Receipt, stats ReceiptStats, path string) Rece
 			acc.commandedModels[r.CommandedModel] = true
 		}
 		switch r.Honored {
-		case HonoredTrue:
+		case org.HonoredTrue:
 			acc.trueCount++
-		case HonoredFalse:
+		case org.HonoredFalse:
 			acc.falseCount++
 		default:
-			// HonoredUnknown and any unrecognised value both count as
+			// org.HonoredUnknown and any unrecognised value both count as
 			// unknown -- tri-state display never silently drops a receipt.
 			acc.unknownCount++
 		}

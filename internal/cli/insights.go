@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,27 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thomas0124/ralph/internal/insights"
+	"github.com/thomas0124/ralph/internal/org"
 )
-
-// defaultReceiptsPath resolves the default model-receipts.jsonl path without
-// requiring the org runtime. It uses git rev-parse --show-toplevel to find
-// the repo root, falling back to the relative path in the working directory.
-func defaultReceiptsPath() string {
-	root, err := gitToplevel()
-	if err != nil {
-		return ".harness/state/org/model-receipts.jsonl"
-	}
-	return filepath.Join(root, ".harness/state/org/model-receipts.jsonl")
-}
-
-// gitToplevel runs git rev-parse --show-toplevel and returns the repo root.
-func gitToplevel() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 func newInsightsCmd() *cobra.Command {
 	var (
@@ -44,10 +24,12 @@ func newInsightsCmd() *cobra.Command {
 		Use:   "insights",
 		Short: "Show aggregated pipeline insights",
 		Long: `Aggregate insight events from docs/insights/events/ and org runtime model
-receipts (.harness/state/org/model-receipts.jsonl) into a pipeline summary.
+receipts (<org-state-dir>/model-receipts.jsonl) into a pipeline summary.
 
-The receipts path defaults to <git-toplevel>/.harness/state/org/model-receipts.jsonl.
-Pass --receipts to point at an explicit file instead.
+The org state dir is resolved with the same precedence "ralph org" verbs
+use (env RALPH_ORG_STATE_DIR, git toplevel, then cwd) -- see
+internal/org/statedir.go's ResolveOrgStateDir. Pass --receipts to point at
+an explicit file instead.
 
 Sections:
   Events     — per-phase table: phase / events / verdicts / findings / triage
@@ -63,14 +45,15 @@ Use --json for machine-readable output of the full aggregate.`,
 				eventsDir = "docs/insights/events"
 			}
 			if receiptsPath == "" {
-				receiptsPath = defaultReceiptsPath()
+				stateDir, _ := org.ResolveOrgStateDir("", false)
+				receiptsPath = org.ReceiptsPathIn(stateDir)
 			}
 			return runInsights(eventsDir, receiptsPath, jsonMode, cmd)
 		},
 	}
 
 	cmd.Flags().StringVar(&eventsDir, "events-dir", "", "directory containing insight event JSONL files (default: docs/insights/events)")
-	cmd.Flags().StringVar(&receiptsPath, "receipts", "", "path to the org runtime's model-receipts.jsonl (default: <git-toplevel>/.harness/state/org/model-receipts.jsonl)")
+	cmd.Flags().StringVar(&receiptsPath, "receipts", "", "path to the org runtime's model-receipts.jsonl (default: resolved via the org state-dir precedence -- env RALPH_ORG_STATE_DIR, git toplevel, or cwd)")
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "emit the aggregate as JSON")
 
 	cmd.AddCommand(newInsightsBackfillCmd())

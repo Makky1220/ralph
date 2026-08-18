@@ -16,17 +16,22 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/thomas0124/ralph/internal/config"
+	"github.com/thomas0124/ralph/internal/org/driver"
 	"github.com/thomas0124/ralph/internal/scaffold"
 )
 
 func newDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var probeModels bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check environment and project setup",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(".")
+			return runDoctorOpts(".", probeModels)
 		},
 	}
+	cmd.Flags().BoolVar(&probeModels, "probe-models", false,
+		"probe every [org].model_pool entry by launching a minimal CLI invocation per model (slower; requires claude/codex on PATH)")
+	return cmd
 }
 
 type checkResult struct {
@@ -35,7 +40,19 @@ type checkResult struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// runDoctor is the pre-org-runtime entry point, preserved so existing
+// callers/tests that don't know about --probe-models keep working unchanged.
+// It never runs model-pool probes (equivalent to --probe-models=false).
 func runDoctor(targetDir string) error {
+	return runDoctorOpts(targetDir, false)
+}
+
+// runDoctorOpts is runDoctor plus the --probe-models opt-in: when true, every
+// [org].model_pool entry is probed via internal/org/driver.ProbeModel (Check
+// 11). Model probes are the only check in this function that spawn CLI
+// subprocesses beyond the pre-existing --version probes, so they stay
+// opt-in and off by default.
+func runDoctorOpts(targetDir string, probeModels bool) error {
 	cfg, cfgErr := config.Load(filepath.Join(targetDir, "ralph.toml"))
 	var results []checkResult
 
@@ -47,14 +64,42 @@ func runDoctor(targetDir string) error {
 		})
 	}
 
+	// Check 1: Claude Code CLI.
 	results = append(results, checkClaudeCLI(cfg))
+
+	// Check 2: Codex.
 	results = append(results, checkCodexCLI(cfg))
+
+	// Check 3: Codex effective config (project trust + hooks feature + at least one hook).
 	results = append(results, checkCodexEffectiveConfig(targetDir))
-	results = append(results, checkGo(cfg))
+
+	// Check 4: Hooks integrity.
 	results = append(results, checkHooks(targetDir))
+
+	// Check 5: Manifest version.
 	results = append(results, checkManifestVersion(targetDir))
+
+	// Check 6: Language pack verify.sh (checks project's installed packs via manifest).
 	results = append(results, checkInstalledPacks(targetDir)...)
 
+	// Check 7: Go availability.
+	results = append(results, checkGo(cfg))
+
+	// Check 8: herdr availability (org runtime driver adapter).
+	results = append(results, checkHerdrAvailable())
+
+	// Check 9: agmsg availability (org runtime driver adapter).
+	results = append(results, checkAgmsgAvailable(driver.ResolveAgmsgHome(cfg.Org.AgmsgHome)))
+
+	// Check 10: [org] envelope summary (pool size / max_seats).
+	results = append(results, checkOrgEnvelope(cfg))
+
+	// Check 11: optional model-pool probes (--probe-models).
+	if probeModels {
+		results = append(results, checkOrgModelProbes(cfg, driver.ExecRunner{})...)
+	}
+
+	// Print results.
 	fmt.Println("ralph doctor")
 	fmt.Println()
 
@@ -96,9 +141,19 @@ func countFailed(results []checkResult) int {
 	return n
 }
 
-func probeBinary(bin string) (string, error) {
+// probeBinary runs `<bin> --version` to confirm the binary on PATH is actually
+// callable. A bare exec.LookPath success is not enough — stale or broken
+// shims (npm-installed CLIs that lost their entry script, version managers
+// pointing at a removed install) appear on PATH but blow up at runtime,
+// which lets `ralph doctor` report `pass` while every subsequent /work or
+// /cross-review fails.
+//
+// Bounded by a 5-second timeout so a hung CLI cannot wedge `ralph doctor`.
+// Returns the first non-empty line of the version output so multi-line
+// banners do not break the doctor table layout.
+func probeBinary(bin string) (version string, err error) {
 	if _, lookErr := exec.LookPath(bin); lookErr != nil {
-		return "", fmt.Errorf("%s not found in PATH", bin)
+		return "", fmt.Errorf("%s not found in PATH: %w", bin, lookErr)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -109,7 +164,7 @@ func probeBinary(bin string) (string, error) {
 	if runErr != nil {
 		return "", fmt.Errorf("%s --version failed: %w", bin, runErr)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			return trimmed, nil
 		}
@@ -155,10 +210,10 @@ func checkCodexCLI(cfg config.Config) checkResult {
 
 // checkCodexEffectiveConfig confirms that .codex/config.toml is present and
 // carries the bits Codex actually loads from a project-level config:
-// [features] hooks = true plus at least one [hooks.<event>] entry.
+// `[features] hooks = true` plus at least one [hooks.<event>] entry.
 // We cannot probe Codex's trust state from Go, so the result stays a warning
 // when the file is structurally fine — the user has to confirm trust via
-// `codex trust .`.
+// `codex trust .` and the .codex/README.md guidance.
 func checkCodexEffectiveConfig(targetDir string) checkResult {
 	r := checkResult{Name: "Codex effective config"}
 	cfgPath := filepath.Join(targetDir, ".codex", "config.toml")
@@ -189,9 +244,9 @@ func checkCodexEffectiveConfig(targetDir string) checkResult {
 	}
 
 	hookEntries := 0
-	hasInlineHooks := false
+	hasInlineHookRepresentation := false
 	if hooks, ok := raw["hooks"].(map[string]any); ok {
-		hasInlineHooks = true
+		hasInlineHookRepresentation = true
 		for _, eventHooks := range hooks {
 			switch v := eventHooks.(type) {
 			case []any:
@@ -205,10 +260,10 @@ func checkCodexEffectiveConfig(targetDir string) checkResult {
 	}
 
 	hooksJSONPath := filepath.Join(targetDir, ".codex", "hooks.json")
-	if hasInlineHooks {
+	if hasInlineHookRepresentation {
 		if _, err := os.Stat(hooksJSONPath); err == nil {
 			r.Status = "fail"
-			r.Detail = "both .codex/config.toml [hooks] and .codex/hooks.json exist; remove hooks.json"
+			r.Detail = "both .codex/config.toml [hooks] and .codex/hooks.json exist; remove hooks.json because this project uses config.toml as the Codex hook source of truth"
 			return r
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			r.Status = "warn"
@@ -223,33 +278,10 @@ func checkCodexEffectiveConfig(targetDir string) checkResult {
 		r.Detail = "[features] hooks = true is not set; project hooks will be ignored"
 	case hookEntries == 0:
 		r.Status = "warn"
-		r.Detail = "no [hooks.*] entries — run `codex trust .` once configured"
+		r.Detail = "no [hooks.*] entries — hooks feature enabled but nothing wired up. Run `codex trust .` once configured"
 	default:
 		r.Status = "pass"
 		r.Detail = fmt.Sprintf("hooks=true, %d hook entry(ies). Confirm `codex trust .` ran for this project", hookEntries)
-	}
-	return r
-}
-
-func checkGo(cfg config.Config) checkResult {
-	r := checkResult{Name: "Go"}
-	_, err := exec.LookPath("go")
-	if err != nil {
-		if cfg.Doctor.RequireGo {
-			r.Status = "fail"
-			r.Detail = "go not found in PATH"
-		} else {
-			r.Status = "info"
-			r.Detail = "not installed (not required)"
-		}
-	} else {
-		out, runErr := exec.Command("go", "version").Output()
-		if runErr != nil {
-			r.Status = "pass"
-		} else {
-			r.Status = "pass"
-			r.Detail = strings.TrimSpace(string(out))
-		}
 	}
 	return r
 }
@@ -278,6 +310,7 @@ func checkHooks(targetDir string) checkResult {
 		return r
 	}
 
+	// Check that hook script files exist.
 	hooksMap, ok := hooks.(map[string]any)
 	if !ok {
 		r.Status = "pass"
@@ -308,12 +341,15 @@ func checkHooks(targetDir string) checkResult {
 				if !ok {
 					continue
 				}
+				// The command may carry arguments (e.g. "./path/to/script.sh
+				// EventName"); only the first whitespace-separated token is
+				// the executable, so stat that instead of the full string.
 				fields := strings.Fields(cmd)
 				if len(fields) == 0 {
 					continue
 				}
 				exe := fields[0]
-				if _, err := os.Lstat(filepath.Join(targetDir, exe)); errors.Is(err, fs.ErrNotExist) {
+				if _, err := os.Stat(filepath.Join(targetDir, exe)); errors.Is(err, fs.ErrNotExist) {
 					missing++
 				}
 			}
@@ -335,7 +371,7 @@ func checkManifestVersion(targetDir string) checkResult {
 	m, err := scaffold.ReadManifest(manifestPath)
 	if err != nil {
 		r.Status = "warn"
-		r.Detail = "no manifest found — run 'ralph init'"
+		r.Detail = "no manifest found"
 		return r
 	}
 
@@ -349,13 +385,22 @@ func checkManifestVersion(targetDir string) checkResult {
 	return r
 }
 
+// checkInstalledPacks checks packs that are actually installed in the project
+// (detected from manifest), not just what's available in embedded templates.
 func checkInstalledPacks(targetDir string) []checkResult {
 	manifestPath := filepath.Join(targetDir, ".ralph", "manifest.toml")
 	m, err := scaffold.ReadManifest(manifestPath)
 	if err != nil {
-		return nil
+		// No manifest — fall back to checking embedded packs.
+		return checkEmbeddedPacks()
 	}
 
+	// Use Meta.Packs as the authoritative installed-pack list.
+	// Both `ralph init` (init.go) and `ralph pack add` (pack.go) maintain this
+	// field, so it reliably reflects which packs were installed.
+	// The previous approach walked PackFS and probed m.Files[pack-root-relative
+	// path], but manifest keys are namespaced (e.g. "packs/languages/golang/…"),
+	// so the lookup always missed and reported "none installed".
 	if len(m.Meta.Packs) == 0 {
 		return []checkResult{{Name: "Language packs", Status: "pass", Detail: "none installed"}}
 	}
@@ -363,15 +408,199 @@ func checkInstalledPacks(targetDir string) []checkResult {
 	var results []checkResult
 	for _, p := range m.Meta.Packs {
 		r := checkResult{Name: fmt.Sprintf("Pack: %s", p)}
-		verifyPath := filepath.Join(targetDir, "packs", "languages", p, "verify.sh")
-		relVerify := filepath.Join("packs", "languages", p, "verify.sh")
-		if _, err := os.Stat(verifyPath); errors.Is(err, fs.ErrNotExist) {
+		// verify.sh lives under packs/languages/<lang>/verify.sh on disk.
+		// The previous code probed filepath.Join(targetDir, "verify.sh") (project
+		// root), which always produced a misleading "not found on disk" warning.
+		verifyPath := filepath.Join(targetDir, packRelDir(p), "verify.sh")
+		packFS, pErr := scaffold.PackFS(p)
+		if pErr != nil {
 			r.Status = "warn"
-			r.Detail = fmt.Sprintf("%s not found on disk", relVerify)
+			r.Detail = "pack not found in templates"
+			results = append(results, r)
+			continue
+		}
+		if _, fErr := packFS.Open("verify.sh"); fErr != nil {
+			r.Status = "warn"
+			r.Detail = "verify.sh missing in template"
+		} else if _, sErr := os.Stat(verifyPath); errors.Is(sErr, fs.ErrNotExist) {
+			r.Status = "warn"
+			r.Detail = fmt.Sprintf("verify.sh not found on disk: %s", verifyPath)
 		} else {
 			r.Status = "pass"
 		}
 		results = append(results, r)
 	}
 	return results
+}
+
+// checkEmbeddedPacks is the fallback when no manifest exists.
+func checkEmbeddedPacks() []checkResult {
+	packs, err := scaffold.AvailablePacks()
+	if err != nil {
+		return []checkResult{{Name: "Language packs", Status: "warn", Detail: "could not list packs"}}
+	}
+
+	var results []checkResult
+	for _, p := range packs {
+		r := checkResult{Name: fmt.Sprintf("Pack: %s", p)}
+		packFS, pErr := scaffold.PackFS(p)
+		if pErr != nil {
+			r.Status = "warn"
+			r.Detail = "pack not found"
+			results = append(results, r)
+			continue
+		}
+		if _, fErr := packFS.Open("verify.sh"); fErr != nil {
+			r.Status = "warn"
+			r.Detail = "verify.sh missing"
+		} else {
+			r.Status = "pass"
+		}
+		results = append(results, r)
+	}
+	return results
+}
+
+func checkGo(cfg config.Config) checkResult {
+	r := checkResult{Name: "Go"}
+	_, err := exec.LookPath("go")
+	if err != nil {
+		if cfg.Doctor.RequireGo {
+			r.Status = "fail"
+			r.Detail = "go not found in PATH"
+		} else {
+			r.Status = "pass"
+			r.Detail = "not required"
+		}
+	} else {
+		r.Status = "pass"
+	}
+	return r
+}
+
+// checkHerdrAvailable reports whether the herdr CLI (org runtime seat driver)
+// is on PATH. Org runtime is purely additive (AC-9): a project that never
+// runs `ralph org` has no reason to install herdr, so absence is reported as
+// "info", not "warn"/"fail" — it must never change runDoctorOpts' exit code.
+func checkHerdrAvailable() checkResult {
+	r := checkResult{Name: "herdr"}
+	if err := driver.HerdrAvailable(); err != nil {
+		r.Status = "info"
+		r.Detail = "herdr not installed — org runtime seats unavailable (solo execution unaffected)"
+		return r
+	}
+	r.Status = "pass"
+	r.Detail = "available"
+	return r
+}
+
+// agmsgTestedVersion is the agmsg script interface version this adapter
+// (internal/org/driver/agmsg.go) was verified against. A different VERSION
+// found at runtime is surfaced as an informational note only -- doctor never
+// fails or warns on a version mismatch, since the script interface's actual
+// stability is unknown for versions ralph hasn't been tested against.
+const agmsgTestedVersion = "1.1.13"
+
+// checkAgmsgAvailable is checkHerdrAvailable's counterpart for the agmsg
+// script collection. Unlike herdr, agmsg is NOT a single binary on PATH --
+// home is the resolved agmsg home directory (driver.ResolveAgmsgHome), and
+// availability is decided by the presence of home's scripts/send.sh.
+// checkAgmsgAvailable's Detail always names home explicitly (both the
+// not-installed and available branches) -- tech-debt fix: this check used
+// to discard driver.AgmsgAvailable's resolved home in favor of a fixed
+// string, so a misconfigured 3-surface `agmsg_home` (env/config/default)
+// gave no clue which directory doctor actually checked
+// (docs/tech-debt/README.md, "checkAgmsgAvailable discards the resolved
+// agmsg home from driver.AgmsgAvailable's error").
+func checkAgmsgAvailable(home string) checkResult {
+	r := checkResult{Name: "agmsg"}
+	if err := driver.AgmsgAvailable(home); err != nil {
+		r.Status = "info"
+		r.Detail = fmt.Sprintf("agmsg not installed at %s — org runtime seats unavailable (solo execution unaffected)", home)
+		return r
+	}
+	r.Status = "pass"
+	r.Detail = fmt.Sprintf("available at %s", home)
+	version, err := driver.AgmsgVersion(home)
+	if err != nil {
+		return r
+	}
+	r.Detail = fmt.Sprintf("available at %s (version %s)", home, version)
+	if version != agmsgTestedVersion {
+		r.Status = "info"
+		r.Detail = fmt.Sprintf("available at %s (version %s; tested against %s — behavior differences are possible)",
+			home, version, agmsgTestedVersion)
+	}
+	return r
+}
+
+// checkOrgEnvelope summarizes the loaded [org] envelope (model_pool size,
+// max_seats) as an informational line. It never re-loads config — the caller
+// already resolved cfg via config.Load, and a load/parse failure is already
+// surfaced by the pre-existing "ralph.toml" check in runDoctorOpts, so this
+// check does not duplicate that reporting.
+func checkOrgEnvelope(cfg config.Config) checkResult {
+	return checkResult{
+		Name:   "Org envelope",
+		Status: "info",
+		Detail: fmt.Sprintf("model_pool: %d entries, max_seats: %d", len(cfg.Org.ModelPool), cfg.Org.MaxSeats),
+	}
+}
+
+// checkOrgModelProbes runs driver.ProbeModel for every [org].model_pool
+// entry, grouped by driver so a single missing CLI produces one skip line
+// instead of one per model. Each probe is bounded by a 30s context so a hung
+// CLI cannot wedge `ralph doctor --probe-models`.
+//
+// codex `--model` support on `codex exec` is best-effort upstream (see
+// driver.ProbeModel), so a codex probe failure is reported as "warn" with an
+// explicit "advisory" label rather than being treated as a hard rejection.
+func checkOrgModelProbes(cfg config.Config, runner driver.Runner) []checkResult {
+	var results []checkResult
+
+	byDriver := make(map[string][]string, len(cfg.Org.DriverPool))
+	var driverOrder []string
+	for _, entry := range cfg.Org.ModelPool {
+		if _, seen := byDriver[entry.Driver]; !seen {
+			driverOrder = append(driverOrder, entry.Driver)
+		}
+		byDriver[entry.Driver] = append(byDriver[entry.Driver], entry.Model)
+	}
+
+	for _, drv := range driverOrder {
+		models := byDriver[drv]
+		if _, err := exec.LookPath(drv); err != nil {
+			results = append(results, checkResult{
+				Name:   fmt.Sprintf("Org model probe (%s)", drv),
+				Status: "info",
+				Detail: fmt.Sprintf("%s not installed — skipping %d model probe(s)", drv, len(models)),
+			})
+			continue
+		}
+		for _, model := range models {
+			results = append(results, probeOrgModel(runner, drv, model))
+		}
+	}
+	return results
+}
+
+// probeOrgModel runs a single ProbeModel call under a bounded timeout and
+// translates the result into a checkResult.
+func probeOrgModel(runner driver.Runner, drv, model string) checkResult {
+	r := checkResult{Name: fmt.Sprintf("Org model probe (%s/%s)", drv, model)}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := driver.ProbeModel(ctx, runner, drv, model); err != nil {
+		r.Status = "warn"
+		if drv == "codex" {
+			r.Detail = fmt.Sprintf("advisory: codex --model support on exec is best-effort upstream; probe failed: %v", err)
+		} else {
+			r.Detail = fmt.Sprintf("probe failed: %v", err)
+		}
+		return r
+	}
+	r.Status = "pass"
+	return r
 }
