@@ -25,19 +25,21 @@ func newInitCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [directory]",
-		Short: "Initialize a new project with Claude Code harness scaffold",
+		Short: "Initialize a new project with harness engineering scaffold",
 		Long: `Scaffolds a project with Claude Code configurations, hooks, skills,
-agents, rules, and pipeline settings.`,
+agents, rules, and org-runtime config. Supports both new and existing projects.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			targetDir := "."
 			if len(args) > 0 {
 				targetDir = args[0]
 			}
+
 			absDir, err := filepath.Abs(targetDir)
 			if err != nil {
 				return fmt.Errorf("resolving directory: %w", err)
 			}
+
 			if nonInteractive {
 				return runInitNonInteractive(absDir, force)
 			}
@@ -57,10 +59,13 @@ type initConfig struct {
 }
 
 func runInitInteractive(targetDir string, force bool) error {
+	// Detect an existing project up front so the user is not asked for a
+	// project name and language packs that will be ignored by the upgrade
+	// path. executeInit retains the same check as a safety net for
+	// non-interactive callers.
 	manifestPath := filepath.Join(targetDir, ".ralph", "manifest.toml")
 	if _, err := os.Stat(manifestPath); err == nil {
-		fmt.Printf("\nExisting project detected. Running upgrade instead...\n\n")
-		return runUpgrade(targetDir, false)
+		return handleExistingProjectInit(manifestPath)
 	}
 
 	defaultName := filepath.Base(targetDir)
@@ -72,9 +77,10 @@ func runInitInteractive(targetDir string, force bool) error {
 
 	cfg := initConfig{
 		ProjectName: defaultName,
-		Packs:       availPacks,
+		Packs:       availPacks, // Default: all packs selected.
 	}
 
+	// Build multi-select options with all packs pre-selected.
 	packOptions := make([]huh.Option[string], len(availPacks))
 	for i, p := range availPacks {
 		packOptions[i] = huh.NewOption(p, p).Selected(true)
@@ -86,7 +92,7 @@ func runInitInteractive(targetDir string, force bool) error {
 				Title("Project name").
 				Value(&cfg.ProjectName),
 			huh.NewMultiSelect[string]().
-				Title("Language packs (optional)").
+				Title("Language packs").
 				Options(packOptions...).
 				Value(&cfg.Packs),
 		),
@@ -113,19 +119,43 @@ func runInitNonInteractive(targetDir string, force bool) error {
 	return executeInit(targetDir, cfg, force)
 }
 
+// handleExistingProjectInit is invoked whenever `ralph init` targets a
+// directory that already has a .ralph/manifest.toml. Projects already on the
+// overlay (v2) layout have nothing to do: re-running init on top of an
+// existing v2 project is a no-op — reconciling further template changes is
+// `ralph upgrade`'s job. Legacy (pre-v2) projects are rejected fail-closed
+// (zero writes): the legacy interactive upgrade engine this used to delegate
+// to was removed in Phase 3 (docs/plans/active
+// /2026-08-18-overlay-scaffold-v2-p3.md, FR-13); the automated migration to
+// v2 arrives in a later ralph release (Phase 4).
+func handleExistingProjectInit(manifestPath string) error {
+	m, err := scaffold.ReadManifest(manifestPath)
+	if err != nil {
+		return fmt.Errorf("reading manifest: %w", err)
+	}
+	if m.Meta.Layout == scaffold.LayoutV2 {
+		fmt.Printf("\nExisting v2-layout project detected. Nothing to do — run `ralph upgrade` to reconcile template changes.\n\n")
+		return nil
+	}
+	return errLegacyLayoutFailClosed
+}
+
 func executeInit(targetDir string, cfg initConfig, force bool) error {
+	// Ensure target directory exists.
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
 
+	// If a manifest already exists, this is a re-init on an existing project.
+	// Delegate to upgrade logic to preserve user-edited files.
 	manifestPath := filepath.Join(targetDir, ".ralph", "manifest.toml")
 	if _, err := os.Stat(manifestPath); err == nil {
-		fmt.Printf("\nExisting project detected. Running upgrade instead...\n\n")
-		return runUpgrade(targetDir, false)
+		return handleExistingProjectInit(manifestPath)
 	}
 
 	fmt.Printf("\nScaffolding %q into %s ...\n\n", cfg.ProjectName, targetDir)
 
+	// Step 1: Render base templates.
 	baseFS, err := scaffold.BaseFS()
 	if err != nil {
 		return fmt.Errorf("loading base templates: %w", err)
@@ -138,35 +168,58 @@ func executeInit(targetDir string, cfg initConfig, force bool) error {
 	if err != nil {
 		return fmt.Errorf("rendering base templates: %w", err)
 	}
-	baselinePaths, err := writeRenderedBaselines(targetDir, baseFS, "", result)
+	printRenderSummary("base", result)
+
+	// Step 1b: reconcile the ralph managed block into any block-owned
+	// surfaces (AGENTS.md, .gitignore) that RenderFS skipped because they
+	// already existed. Files RenderFS actually wrote (fresh init, or
+	// --force) already carry the block as part of the template content, so
+	// this only ever touches pre-existing user files.
+	blockDiskHashes, err := reconcileBlockSurfaces(targetDir, baseFS, result.Skipped, os.Stdout)
 	if err != nil {
 		return err
 	}
-	printRenderSummary("base", result)
 
+	// Step 2: Render selected language packs into packs/languages/<lang>/.
+	// Pack rule.md files are control files: they render to
+	// .claude/rules/ralph/<lang>.md instead of packs/languages/<lang>/rule.md.
+	// renderPackInto (language_pack.go) is the shared helper used here and by
+	// addPack (pack.go) so the two code paths cannot diverge.
 	for _, pack := range cfg.Packs {
-		prr, err := renderPackInto(targetDir, pack, force)
+		pr, err := renderPackInto(targetDir, pack, force)
 		if err != nil {
 			fmt.Printf("  ⚠ pack %s: %v\n", pack, err)
 			continue
 		}
-		for k, v := range prr.hashes {
+		for k, v := range pr.hashes {
 			hashes[k] = v
 		}
-		for k, v := range prr.baselinePaths {
-			baselinePaths[k] = v
-		}
-		printRenderSummary("pack/"+pack, prr.result)
+		printRenderSummary("pack/"+pack, pr.result)
 	}
 
+	// Step 3: Create manifest.
 	manifest := scaffold.NewManifest(Version)
 	manifest.Meta.Packs = cfg.Packs
 	for path, hash := range hashes {
-		if baselinePath, ok := baselinePaths[path]; ok {
-			manifest.SetFileWithBaseline(path, hash, baselinePath)
+		manifest.SetFile(path, hash)
+	}
+
+	// Step 3b: mark the manifest as v2 layout and assign every entry an
+	// ownership attribute (core/seed/block). SetOwner mutates only the
+	// Owner field. Block surfaces that were actually rewritten in step 1b
+	// additionally get their DiskHash recorded via SetFileOwned.
+	manifest.SetLayoutV2()
+	for path, templateHash := range hashes {
+		owner := ownerForScaffoldPath(path)
+		if diskHash, ok := blockDiskHashes[path]; ok && owner == scaffold.OwnerBlock {
+			if err := manifest.SetFileOwned(path, owner, templateHash, diskHash); err != nil {
+				return fmt.Errorf("recording block owner for %s: %w", path, err)
+			}
 			continue
 		}
-		manifest.SetFile(path, hash)
+		if err := manifest.SetOwner(path, owner); err != nil {
+			return fmt.Errorf("setting owner for %s: %w", path, err)
+		}
 	}
 
 	manifestDir := filepath.Join(targetDir, ".ralph")
@@ -179,6 +232,7 @@ func executeInit(targetDir string, cfg initConfig, force bool) error {
 	}
 	fmt.Printf("  ✓ .ralph/manifest.toml\n")
 
+	// Step 4: Git init if needed.
 	gitDir := filepath.Join(targetDir, ".git")
 	if _, err := os.Stat(gitDir); errors.Is(err, fs.ErrNotExist) {
 		if gitBin, err := exec.LookPath("git"); err == nil {
@@ -194,53 +248,45 @@ func executeInit(targetDir string, cfg initConfig, force bool) error {
 		fmt.Printf("  ✓ .git exists (skipped)\n")
 	}
 
-	installManagedGitHooks(targetDir, os.Stdout, os.Stderr)
+	// Step 5: Install local git hooks when possible. This is a runtime side
+	// effect rather than a manifest-managed template file because .git/ is
+	// local to each clone/worktree.
+	installManagedGitHooks(targetDir, os.Stdout, os.Stdout)
 
 	fmt.Printf("\nDone. Next steps:\n")
 	if targetDir != "." {
 		fmt.Printf("  cd %s\n", targetDir)
 	}
-	fmt.Printf("  Edit CLAUDE.md to describe your project\n")
-	fmt.Printf("  ralph doctor   — verify setup\n")
+	fmt.Printf("  Edit AGENTS.md to describe your project\n")
+	fmt.Printf("  ralph doctor to verify setup\n")
 
 	return nil
 }
 
-func writeRenderedBaselines(targetDir string, src fs.FS, prefix string, result *scaffold.RenderResult) (map[string]string, error) {
-	out := make(map[string]string)
-	written := make(map[string]bool, len(result.Created)+len(result.Overwritten))
-	for _, path := range result.Created {
-		written[path] = true
-	}
-	for _, path := range result.Overwritten {
-		written[path] = true
-	}
-	for path := range written {
-		content, err := fs.ReadFile(src, path)
-		if err != nil {
-			return nil, fmt.Errorf("reading baseline source %s: %w", path, err)
-		}
-		manifestPath := filepath.Join(prefix, path)
-		baselinePath, err := scaffold.WriteBaseline(targetDir, manifestPath, content)
-		if err != nil {
-			return nil, err
-		}
-		out[manifestPath] = baselinePath
-	}
-	return out, nil
-}
-
-func printRenderSummary(label string, result *scaffold.RenderResult) {
-	created := len(result.Created)
-	overwritten := len(result.Overwritten)
-	skipped := len(result.Skipped)
-	total := created + overwritten + skipped
-	fmt.Printf("  ✓ %s (%d files: %d created, %d updated, %d skipped)\n",
-		label, total, created, overwritten, skipped)
-}
-
 // ownerForScaffoldPath returns the manifest v3 ownership attribute for a
-// scaffolded file, keyed by its manifest-relative path.
+// scaffolded file, keyed by its manifest-relative path (the same path used
+// as the key of the hashes map built during rendering). See docs/specs
+// 2026-08-17-overlay-scaffold-v2.md, section "層モデル".
+//
+// .ralph/local/** is classified as seed, not core, even though the
+// catch-all below would otherwise mark it core: per the spec's layer model
+// it is the L3 overlay, a user drop-in area that is 不可侵 (create-once,
+// then advisory-only) once it exists. Filing it under core would let the
+// Phase 3 replace planner treat it as a full-replace target and overwrite
+// user content living there.
+//
+// .codex/AGENTS.override.md is classified as seed for the same L3 reason:
+// it is a user-owned Codex customization point (create-once, then
+// advisory-only on template changes), not a core-replaceable file. Filing
+// it under the catch-all's core classification would let the replace
+// planner flag any user edit as unresolved drift and silently overwrite an
+// unedited copy on template changes (cross-review cycle-3 AR#1,
+// docs/reports/cross-review-triage-overlay-scaffold-v2-p3.md).
+//
+// Manifest keys are always fs.FS slash paths (from fs.WalkDir in
+// render.go), regardless of host OS, so relPath is normalized with
+// filepath.ToSlash before comparison to keep classification slash-stable
+// on Windows.
 func ownerForScaffoldPath(relPath string) string {
 	relPath = filepath.ToSlash(relPath)
 	switch relPath {
@@ -275,7 +321,15 @@ var blockSurfaces = []blockSurface{
 
 // reconcileBlockSurfaces appends the ralph managed block into pre-existing
 // AGENTS.md / .gitignore files that RenderFS skipped because they already
-// existed.
+// existed (init never overwrites arbitrary existing files outside
+// --force). Bytes outside the block are preserved exactly; a malformed
+// existing block, or one that already contains a well-formed block, is left
+// untouched (with a warning for the malformed case), matching the block
+// engine's non-destructive stance — updating an already-present block's
+// content is upgrade's job (Phase 3), not init's.
+//
+// Returns the on-disk SHA256 hash (scaffold.HashBytes format) for every path
+// actually rewritten, keyed by manifest-relative path.
 func reconcileBlockSurfaces(targetDir string, baseFS fs.FS, skipped []string, w io.Writer) (map[string]string, error) {
 	skippedSet := make(map[string]bool, len(skipped))
 	for _, p := range skipped {
@@ -290,6 +344,8 @@ func reconcileBlockSurfaces(targetDir string, baseFS fs.FS, skipped []string, w 
 
 		templateContent, err := fs.ReadFile(baseFS, bs.path)
 		if err != nil {
+			// Not every embedded scaffold ships every block surface (e.g.
+			// tests with a minimal mock FS); nothing to reconcile.
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
@@ -302,6 +358,10 @@ func reconcileBlockSurfaces(targetDir string, baseFS fs.FS, skipped []string, w 
 
 		diskPath := filepath.Join(targetDir, bs.path)
 
+		// Refuse to follow symlinks (or operate on any other non-regular
+		// file): writing through a symlinked block surface could land
+		// outside targetDir. Treat it the same as a malformed block — leave
+		// it untouched and warn, rather than error.
 		info, err := os.Lstat(diskPath)
 		if err != nil {
 			return nil, fmt.Errorf("reading existing %s: %w", bs.path, err)
@@ -339,7 +399,9 @@ func reconcileBlockSurfaces(targetDir string, baseFS fs.FS, skipped []string, w 
 }
 
 // extractBlockInterior returns the bytes strictly between the BEGIN and END
-// marker lines of a rendered template's managed block.
+// marker lines of a rendered template's managed block, suitable for passing
+// as the "managed" argument to UpdateManagedBlockStyled when seeding a block
+// into a file that does not have one yet.
 func extractBlockInterior(templateContent []byte, surface string, style upgrade.BlockMarkerStyle) ([]byte, error) {
 	begin := upgrade.BeginMarkerStyled(surface, style)
 	end := upgrade.EndMarkerStyled(style)
@@ -364,4 +426,44 @@ func extractBlockInterior(templateContent []byte, surface string, style upgrade.
 		return nil, nil
 	}
 	return []byte(strings.Join(interior, "\n") + "\n"), nil
+}
+
+func printRenderSummary(label string, result *scaffold.RenderResult) {
+	created := len(result.Created)
+	overwritten := len(result.Overwritten)
+	skipped := len(result.Skipped)
+	total := created + overwritten + skipped
+	fmt.Printf("  ✓ %s (%d files: %d created, %d updated, %d skipped)\n",
+		label, total, created, overwritten, skipped)
+}
+
+// writeRenderedBaselines writes baseline files for every path that was
+// actually written (created or overwritten) during a scaffold.RenderFS call.
+// prefix is prepended to each path to form the manifest key (used when
+// rendering pack files into a subdirectory).
+//
+// This function is kept here to support language_pack.go's renderPackInto,
+// which tracks baselines so the upgrade engine can diff pack files later.
+func writeRenderedBaselines(targetDir string, src fs.FS, prefix string, result *scaffold.RenderResult) (map[string]string, error) {
+	out := make(map[string]string)
+	written := make(map[string]bool, len(result.Created)+len(result.Overwritten))
+	for _, path := range result.Created {
+		written[path] = true
+	}
+	for _, path := range result.Overwritten {
+		written[path] = true
+	}
+	for path := range written {
+		content, err := fs.ReadFile(src, path)
+		if err != nil {
+			return nil, fmt.Errorf("reading baseline source %s: %w", path, err)
+		}
+		manifestPath := filepath.Join(prefix, path)
+		baselinePath, err := scaffold.WriteBaseline(targetDir, manifestPath, content)
+		if err != nil {
+			return nil, err
+		}
+		out[manifestPath] = baselinePath
+	}
+	return out, nil
 }

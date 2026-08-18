@@ -16,18 +16,6 @@ func packRuleContent(packFS fs.FS) ([]byte, bool, error) {
 	return content, true, nil
 }
 
-func packVerifyRelPath(lang string) string {
-	return filepath.Join("packs", "languages", lang, "verify.sh")
-}
-
-func packVerifyContent(packFS fs.FS) ([]byte, bool, error) {
-	content, err := fs.ReadFile(packFS, "verify.sh")
-	if err != nil {
-		return nil, false, nil
-	}
-	return content, true, nil
-}
-
 func mergeRenderResult(dst, src *scaffold.RenderResult) {
 	dst.Created = append(dst.Created, src.Created...)
 	dst.Overwritten = append(dst.Overwritten, src.Overwritten...)
