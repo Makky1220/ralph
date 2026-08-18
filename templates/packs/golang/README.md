@@ -1,7 +1,7 @@
 # Go pack
 
 Default verification order:
-- gofmt
+- gofmt / goimports
 - go vet
 - golangci-lint (if available)
 - staticcheck (if available)

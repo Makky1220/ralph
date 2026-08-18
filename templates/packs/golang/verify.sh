@@ -77,6 +77,7 @@ fi
 mkdir -p "$STATICCHECK_CACHE"
 
 run_static() {
+  # Format check
   unformatted=$(gofmt -l .)
   if [ -n "$unformatted" ]; then
     echo "gofmt: the following files are not formatted:"
@@ -86,14 +87,17 @@ run_static() {
     echo "gofmt: ok"
   fi
 
+  # Vet
   go vet ./... || status=1
 
+  # golangci-lint (optional)
   if command -v golangci-lint >/dev/null 2>&1; then
     golangci-lint run ./... || status=1
   else
     echo "Skipping golangci-lint: command not found."
   fi
 
+  # staticcheck (optional)
   if command -v staticcheck >/dev/null 2>&1; then
     staticcheck ./... || status=1
   else

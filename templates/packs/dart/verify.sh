@@ -58,6 +58,7 @@ fi
 
 status=0
 
+# Detect Flutter vs pure Dart project
 select_tool() {
   is_flutter=false
   if grep -q 'flutter:' pubspec.yaml 2>/dev/null; then
@@ -80,14 +81,17 @@ select_tool() {
 }
 
 run_static() {
+  # Format check
   if command -v dart >/dev/null 2>&1; then
     dart format --output=none --set-exit-if-changed . || status=1
   elif [ "$tool" = "flutter" ]; then
     flutter format --output=none --set-exit-if-changed . || status=1
   fi
 
+  # Static analysis
   "$tool" analyze --fatal-infos || status=1
 
+  # Run code generation if build_runner is a dependency
   if grep -q 'build_runner:' pubspec.yaml 2>/dev/null; then
     echo "build_runner detected. Run 'dart run build_runner build' if generated files are stale."
   fi

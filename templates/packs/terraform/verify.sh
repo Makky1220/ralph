@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
+# HARNESS_VERIFY_MODE is set by the caller (run-verify.sh).
+# Supported values: static, test, all (default).
 mode="${HARNESS_VERIFY_MODE:-all}"
 case "$mode" in
   static|test|all) ;;
@@ -19,6 +21,7 @@ case "$init_validate" in
     ;;
 esac
 
+# Marker detection: only run the pack if Terraform/OpenTofu sources exist.
 roots_file="$(mktemp "${TMPDIR:-/tmp}/ralph-terraform-roots.XXXXXX")"
 cleanup() {
   rm -f "$roots_file"
@@ -32,6 +35,7 @@ find_project_roots() {
       -name .terraform -o \
       -name .terragrunt-cache -o \
       -name node_modules -o \
+      -name .dart_tool -o \
       -name target -o \
       -name dist -o \
       -name build \
@@ -72,6 +76,7 @@ if [ ! -s "$roots_file" ]; then
   exit 0
 fi
 
+# Pick the IaC CLI. Prefer `tofu` (OpenTofu) over `terraform`.
 IAC_CLI=""
 if command -v tofu >/dev/null 2>&1; then
   IAC_CLI=tofu
@@ -94,6 +99,7 @@ has_terraform_tests() {
       -name .terraform -o \
       -name .terragrunt-cache -o \
       -name node_modules -o \
+      -name .dart_tool -o \
       -name target -o \
       -name dist -o \
       -name build \
@@ -103,6 +109,7 @@ has_terraform_tests() {
 }
 
 run_static() {
+  # Format check
   if ! "$IAC_CLI" fmt -check; then
     echo "$IAC_CLI fmt: formatting issues detected."
     status=1
@@ -110,6 +117,8 @@ run_static() {
     echo "$IAC_CLI fmt: ok"
   fi
 
+  # Optional backend-less init/validate for generic CI. Backend-backed plans
+  # require repo-specific credentials and must live in trusted workflows.
   if [ "$init_validate" = "true" ]; then
     if "$IAC_CLI" init -backend=false -input=false; then
       "$IAC_CLI" validate || status=1
@@ -122,12 +131,14 @@ run_static() {
     echo "Skipping $IAC_CLI validate: .terraform/ not found (run '$IAC_CLI init' first)."
   fi
 
+  # tflint (optional)
   if command -v tflint >/dev/null 2>&1; then
     tflint || status=1
   else
     echo "Skipping tflint: command not found."
   fi
 
+  # tfsec / trivy config (optional)
   if command -v tfsec >/dev/null 2>&1; then
     tfsec . || status=1
   elif command -v trivy >/dev/null 2>&1; then
@@ -154,6 +165,10 @@ verify_root() {
     static) run_static ;;
     test)   run_tests ;;
     all)    run_static; run_tests ;;
+    *)
+      echo "Unknown HARNESS_VERIFY_MODE: $mode" >&2
+      return 2
+      ;;
   esac
 
   return "$status"

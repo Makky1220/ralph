@@ -1,9 +1,9 @@
-# __LANGUAGE__ pack
+# __LANGUAGE__ language pack
 
-Replace this file with a description of the language pack.
+Replace this pack with the conventions and verification flow for your language or framework.
 
-Default verification order:
-- TODO: describe verification steps
-
-Customize this pack if your repo uses:
-- TODO: describe customization options
+Recommended contents:
+- common file layout rules
+- common verification commands
+- failure modes worth checking every time
+- stack-specific contracts, schemas, or architecture notes
