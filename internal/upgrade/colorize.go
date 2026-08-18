@@ -2,6 +2,8 @@ package upgrade
 
 import "strings"
 
+// ANSI SGR escape sequences. Kept unexported because the formatting choice is
+// an implementation detail of Colorize and should not leak into other packages.
 const (
 	ansiReset      = "\x1b[0m"
 	ansiBoldRed    = "\x1b[1;31m"
@@ -12,6 +14,20 @@ const (
 	ansiDimDefault = "\x1b[2m"
 )
 
+// Colorize wraps a UnifiedDiff result with ANSI color escapes for terminal
+// display. The function is pure: callers gate it on TTY/`NO_COLOR` themselves.
+//
+// Recognized line shapes:
+//   - "--- ..."   → bold red    (old-file header)
+//   - "+++ ..."   → bold green  (new-file header)
+//   - "@@ ... @@" → cyan        (range header)
+//   - "<gutter> │ -..." → red   (removal)
+//   - "<gutter> │ +..." → green (addition)
+//   - "\ ..."     → dim         (no-newline marker)
+//   - context (` `) and anything else → unchanged
+//
+// Unrecognized lines pass through untouched so the function degrades safely
+// if the diff format ever evolves ahead of this colorizer.
 func Colorize(diff string) string {
 	if diff == "" {
 		return ""
@@ -53,6 +69,9 @@ func ansiForLine(line string) string {
 	case strings.HasPrefix(line, "\\ "):
 		return ansiDimDefault
 	}
+	// Body lines carry the gutter `<old> <new> │ <prefix><content>`. Locate
+	// the separator and inspect the byte immediately after it. We must use
+	// byte indexing here because `│` is a 3-byte UTF-8 rune.
 	if idx := strings.Index(line, diffSeparator); idx >= 0 {
 		after := idx + len(diffSeparator)
 		if after < len(line) {

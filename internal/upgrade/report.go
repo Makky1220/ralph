@@ -10,11 +10,15 @@ import (
 	"strings"
 )
 
-// UpgradeReportData is the input to RenderUpgradeReport.
+// UpgradeReportData is the input to RenderUpgradeReport: the outcome of a
+// ReplacePlan applied against targetDir, plus rendered advisory diffs and
+// free-form notes. All slices may be given in any order — rendering sorts
+// by path so output is deterministic regardless of caller ordering.
 type UpgradeReportData struct {
 	// TemplateVersion is the version being upgraded to.
 	TemplateVersion string
-	// GeneratedAt is a caller-supplied timestamp string.
+	// GeneratedAt is a caller-supplied timestamp string. The render path
+	// never calls time.Now itself, so output is reproducible in tests.
 	GeneratedAt string
 
 	// DeletedPaths, CreatedPaths, UpdatedPaths are the per-op path lists
@@ -27,20 +31,24 @@ type UpgradeReportData struct {
 	// without a file write (ReplacePlan.ManifestRefresh).
 	ManifestRefreshPaths []string
 
-	// UnresolvedDrift is ReplacePlan.Drift.
+	// UnresolvedDrift is ReplacePlan.Drift: paths left untouched because
+	// disk content diverges from both the recorded and new template hash.
 	UnresolvedDrift []DriftEntry
 
 	// Advisories is the rendered output of RenderAdvisoryDiffs.
 	Advisories []AdvisoryDiff
 
-	// LegacySkipped is ReplacePlan.LegacySkipped.
+	// LegacySkipped is ReplacePlan.LegacySkipped: block-owned or legacy
+	// (unattributed) paths left entirely alone.
 	LegacySkipped []string
 
 	// Notes are free-form lines appended in a trailing "Notes" section.
 	Notes []string
 }
 
-// RenderUpgradeReport renders data as deterministic markdown.
+// RenderUpgradeReport renders data as deterministic markdown. Sections with
+// no content are omitted; sections with content list entries in sorted-path
+// order. Rendering the same data twice produces byte-identical output.
 func RenderUpgradeReport(data UpgradeReportData) []byte {
 	var b strings.Builder
 
@@ -179,12 +187,15 @@ func sortedCopy(paths []string) []string {
 var reportNameSanitizeRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // upgradeReportDir is the single source of truth for the upgrade report
-// directory.
+// directory: UpgradeReportRelPath builds its output path under this
+// directory, and WriteUpgradeReport requires relPath to resolve under it.
 const upgradeReportDir = "docs/reports"
 
 // UpgradeReportRelPath returns the manifest-relative path an upgrade report
 // for the given template version and date should be written to:
-// docs/reports/upgrade-<version>-<date>.md.
+// docs/reports/upgrade-<version>-<date>.md. Both version and date are
+// sanitized by stripping any character outside [A-Za-z0-9._-] so path
+// separators or spaces in either value cannot escape the reports directory.
 func UpgradeReportRelPath(version, date string) string {
 	safeVersion := reportNameSanitizeRe.ReplaceAllString(version, "")
 	safeDate := reportNameSanitizeRe.ReplaceAllString(date, "")
@@ -193,7 +204,17 @@ func UpgradeReportRelPath(version, date string) string {
 
 // WriteUpgradeReport validates relPath (via scaffold.CleanLocalRelPath) and
 // writes content to targetDir/relPath, creating parent directories as
-// needed. relPath must resolve under docs/reports/.
+// needed. relPath must resolve under docs/reports/ — WriteUpgradeReport
+// rejects any cleaned path outside that prefix (including the directory
+// path itself, with no filename), even if it is otherwise a valid
+// local-relative path.
+//
+// This write also bypasses ApplyOps (it runs after the core replace plan
+// has already been applied), so it applies the same containment checks
+// ApplyOps and the v2 exception-face writes use: ValidateRealParentChain
+// against every existing parent path component (guards against e.g. a
+// symlinked docs/ or docs/reports/ directory), plus an Lstat of the leaf
+// that rejects anything other than a regular file or an absent entry.
 func WriteUpgradeReport(targetDir string, relPath string, content []byte) error {
 	clean, err := cleanPathKey(relPath)
 	if err != nil {

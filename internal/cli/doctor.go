@@ -30,9 +30,9 @@ func newDoctorCmd() *cobra.Command {
 }
 
 type checkResult struct {
-	Name   string
-	Status string
-	Detail string
+	Name   string `json:"name"`
+	Status string `json:"status"` // pass, info, warn, fail
+	Detail string `json:"detail,omitempty"`
 }
 
 func runDoctor(targetDir string) error {

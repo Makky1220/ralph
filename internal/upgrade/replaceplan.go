@@ -52,7 +52,10 @@ type FileOp struct {
 // ManifestRefreshEntry records a path whose disk content already equals the
 // new template content but whose manifest-recorded hash is stale. No file
 // write is required; the caller only needs to advance the manifest's
-// recorded hash to Hash.
+// recorded hash to Hash. This is what keeps re-planning over a partially
+// applied tree stable: files that already landed on disk in a prior
+// (interrupted) run are recognized as settled instead of re-planned or
+// misclassified as drift.
 type ManifestRefreshEntry struct {
 	Path string
 	Hash string
@@ -60,7 +63,9 @@ type ManifestRefreshEntry struct {
 
 // DriftEntry records a path where disk content diverges from both the
 // manifest-recorded state and the new template content, with no fork record
-// to explain the divergence.
+// to explain the divergence. PlanCoreReplace never plans a write for a
+// drifted path (non-destructive default); resolving drift is an eject/adopt
+// decision left to later phases.
 type DriftEntry struct {
 	Path         string
 	RecordedHash string
@@ -71,7 +76,12 @@ type DriftEntry struct {
 }
 
 // AdvisoryEntry records a path that PlanCoreReplace intentionally leaves
-// untouched but surfaces to the operator.
+// untouched but surfaces to the operator: every fork path produces an
+// advisory entry, even when its content is byte-identical to the new
+// template — that case renders in the report as a "_No differences._"
+// section, not a hidden or omitted one — plus seed paths whose template
+// side changed since last applied. This only carries the path and hashes;
+// rendering the actual diff is advisory.go's job.
 type AdvisoryEntry struct {
 	Path     string
 	Owner    string
@@ -88,26 +98,60 @@ type ReplacePlan struct {
 	Drift           []DriftEntry
 	Advisories      []AdvisoryEntry
 	// LegacySkipped lists paths whose manifest entry has owner=block or is a
-	// legacy (unattributed, ManifestFile.IsLegacyOwner()) entry.
+	// legacy (unattributed, ManifestFile.IsLegacyOwner()) entry. These are
+	// left entirely alone; classification is a later phase's responsibility.
 	LegacySkipped []string
 	// ManifestRemove lists, in sorted order, the paths whose manifest entry
-	// the caller must drop once ApplyOps has returned a nil error.
+	// the caller must drop once ApplyOps has returned a nil error (i.e.
+	// after the commit barrier — see ApplyOps' doc comment). This covers
+	// every owner=core path the template no longer ships: both the path
+	// paired with an OpDelete op (disk still had the unmodified file) and
+	// the path with no op at all (disk was already absent, so there is
+	// nothing to delete but the stale manifest entry still needs to go).
+	// Without this signal a caller has no way to notice the second case and
+	// the manifest accumulates entries for paths that exist nowhere.
 	ManifestRemove []string
 	// Preserved lists, in sorted order, manifest-tracked paths that matched
 	// a ReplaceOptions.PreservePrefixes entry and had no corresponding
-	// desired-state content.
+	// desired-state content. These paths are left completely untouched: no
+	// op, no ManifestRemove entry, no Drift entry. See ReplaceOptions'
+	// PreservePrefixes doc comment.
 	Preserved []string
 }
 
 // ReplaceOptions controls how PlanCoreReplaceDesired treats specific paths
 // before the normal ownership-based classification rules run.
 type ReplaceOptions struct {
-	// SkipPaths excludes matching paths from classification entirely.
+	// SkipPaths excludes matching paths from classification entirely: the
+	// planner never emits an op, refresh, drift, or advisory entry for
+	// them, and they never appear in Preserved either. Callers use this for
+	// paths handled by a dedicated mechanism outside the replace planner
+	// (e.g. the settings.json 3-way merge, or managed-block surfaces).
 	SkipPaths map[string]bool
-	// PreservePrefixes lists slash-separated path prefixes for which template
-	// absence must not produce a delete op, a ManifestRemove entry, or a
-	// Drift entry.
+	// PreservePrefixes lists slash-separated path prefixes (e.g.
+	// "packs/languages/golang/") for which template absence must not
+	// produce a delete op, a ManifestRemove entry, or a Drift entry. A
+	// manifest-tracked path under one of these prefixes that has no
+	// desired-state content is left on disk and in the manifest untouched,
+	// and is recorded in ReplacePlan.Preserved instead. This only
+	// suppresses the "template no longer has this path" outcome: a path
+	// under a preserve prefix that does have desired-state content is
+	// classified normally (creates/updates/no-op still apply), since the
+	// prefix exists to protect namespaces that have gone fully absent (e.g.
+	// an uninstalled language pack), not to opt a still-active namespace
+	// out of upgrades.
 	PreservePrefixes []string
+	// OwnerForPath resolves the ownership attribute (scaffold.OwnerCore/
+	// Fork/Seed/Block) a path would be assigned if ralph adopted it right
+	// now. It is only consulted for untracked paths (no manifest entry)
+	// that are also present in the desired state — see classifyUntracked.
+	// A nil OwnerForPath (the zero value) preserves the pre-existing
+	// behavior: such a path always classifies as drift when disk content
+	// diverges from the template. This is a callback rather than a direct
+	// dependency because the planner (internal/upgrade) cannot import the
+	// CLI layer's path->owner mapping (internal/cli's ownerForScaffoldPath)
+	// without inverting that package boundary.
+	OwnerForPath func(relPath string) string
 }
 
 // hasPreservePrefix reports whether path matches one of prefixes.
@@ -122,6 +166,13 @@ func hasPreservePrefix(path string, prefixes []string) bool {
 
 // PlanCoreReplace computes an ordered file-operation plan over the union of
 // template paths (walked from templateFS) and manifest-tracked paths in m.
+//
+// This is a thin adapter over PlanCoreReplaceDesired: it walks templateFS
+// into a path→content map and delegates with a zero-value ReplaceOptions
+// (no skip paths, no preserve prefixes). Callers that need to compose
+// desired state from more than one fs.FS (e.g. base templates plus
+// installed language packs), or that need SkipPaths/PreservePrefixes,
+// should build the map themselves and call PlanCoreReplaceDesired directly.
 func PlanCoreReplace(m *scaffold.Manifest, targetDir string, templateFS fs.FS) (ReplacePlan, error) {
 	tmplFiles, err := collectTemplateFiles(templateFS)
 	if err != nil {
@@ -133,6 +184,22 @@ func PlanCoreReplace(m *scaffold.Manifest, targetDir string, templateFS fs.FS) (
 // PlanCoreReplaceDesired computes an ordered file-operation plan over the
 // union of desired-state paths (template-relative path → content) and
 // manifest-tracked paths in m.
+//
+// PlanCoreReplaceDesired only reads disk (to hash existing content); it
+// never writes. Every path — manifest keys and desired-state keys alike —
+// is validated with scaffold.CleanLocalRelPath before use; an invalid path
+// aborts planning with an error (spec AC-9).
+//
+// opts.SkipPaths excludes matching paths from all classification before the
+// per-owner rules run. opts.PreservePrefixes exempts matching
+// manifest-tracked, template-absent paths from delete/ManifestRemove/drift,
+// collecting them into ReplacePlan.Preserved instead. See ReplaceOptions'
+// field docs.
+//
+// Classification is driven by each path's manifest ownership attribute
+// (core/fork/seed/block) plus the legacy case (no ownership recorded). See
+// docs/specs/2026-08-17-overlay-scaffold-v2.md, section "層モデル", and the
+// Phase 1 plan's slice-4 handoff for the exact per-owner rules.
 func PlanCoreReplaceDesired(m *scaffold.Manifest, targetDir string, desired map[string][]byte, opts ReplaceOptions) (ReplacePlan, error) {
 	if m == nil {
 		return ReplacePlan{}, errors.New("nil manifest")
@@ -190,7 +257,7 @@ func PlanCoreReplaceDesired(m *scaffold.Manifest, targetDir string, desired map[
 			return ReplacePlan{}, fmt.Errorf("reading disk file %q: %w", path, derr)
 		}
 
-		classifyPath(&plan, &deletes, &creates, &updates, path, entry, hasEntry, tmplContent, hasTemplate, diskContent, hasDisk)
+		classifyPath(&plan, &deletes, &creates, &updates, path, entry, hasEntry, tmplContent, hasTemplate, diskContent, hasDisk, opts.OwnerForPath)
 	}
 
 	plan.Ops = make([]FileOp, 0, len(deletes)+len(creates)+len(updates))
@@ -215,9 +282,10 @@ func classifyPath(
 	hasTemplate bool,
 	diskContent []byte,
 	hasDisk bool,
+	ownerForPath func(string) string,
 ) {
 	if !hasEntry {
-		classifyUntracked(plan, creates, path, tmplContent, hasTemplate, diskContent, hasDisk)
+		classifyUntracked(plan, creates, path, tmplContent, hasTemplate, diskContent, hasDisk, ownerForPath)
 		return
 	}
 
@@ -237,12 +305,19 @@ func classifyPath(
 	case scaffold.OwnerFork:
 		classifyFork(plan, path, entry, tmplContent, hasTemplate, diskContent, hasDisk)
 	case scaffold.OwnerSeed:
+		// Seed's "changed since last seen" comparison is against the
+		// previously recorded *template* hash (has the template evolved?),
+		// not the disk-content hash used for core's modification check —
+		// seed files are user-owned once created, so drift-vs-disk is never
+		// relevant here.
 		recordedTemplateHash := entry.TemplateHash
 		if recordedTemplateHash == "" {
 			recordedTemplateHash = entry.Hash
 		}
 		classifySeed(plan, creates, path, recordedTemplateHash, tmplContent, hasTemplate, diskContent, hasDisk)
 	default:
+		// Unknown/future owner values: treat like legacy — leave alone
+		// rather than guess.
 		plan.LegacySkipped = append(plan.LegacySkipped, path)
 	}
 }
@@ -267,6 +342,7 @@ func classifyCore(
 				if recordedHash != templateHash {
 					plan.ManifestRefresh = append(plan.ManifestRefresh, ManifestRefreshEntry{Path: path, Hash: templateHash})
 				}
+				// else: fully settled, true no-op.
 			case recordedHash:
 				*updates = append(*updates, FileOp{Kind: OpUpdate, Path: path, Content: tmplContent, NewHash: templateHash})
 			default:
@@ -276,7 +352,11 @@ func classifyCore(
 		return
 	}
 
+	// Template no longer has this path: a candidate for deletion, but never
+	// destroy a modified file.
 	if !hasDisk {
+		// Already gone from disk; nothing to delete, but the manifest entry
+		// is now stale and must still be dropped by the caller.
 		plan.ManifestRemove = append(plan.ManifestRemove, path)
 		return
 	}
@@ -309,7 +389,10 @@ func classifyFork(
 	plan.Advisories = append(plan.Advisories, AdvisoryEntry{Path: path, Owner: scaffold.OwnerFork, DiskHash: diskHash, NewHash: newHash})
 }
 
-// classifySeed applies the owner=seed rules.
+// classifySeed applies the owner=seed rules. recordedTemplateHash is the
+// template hash last recorded for this path (not a disk-content hash — seed
+// content is user-owned once created, so upgrade never compares it against
+// disk).
 func classifySeed(
 	plan *ReplacePlan,
 	creates *[]FileOp,
@@ -333,9 +416,26 @@ func classifySeed(
 		diskHash := scaffold.HashBytes(diskContent)
 		plan.Advisories = append(plan.Advisories, AdvisoryEntry{Path: path, Owner: scaffold.OwnerSeed, DiskHash: diskHash, NewHash: templateHash})
 	}
+	// else: template unchanged since last recorded application, no-op.
 }
 
-// classifyUntracked handles paths with no manifest entry at all.
+// classifyUntracked handles paths with no manifest entry at all: template
+// files ralph has never recorded ownership for yet.
+//
+// When ownerForPath is non-nil and resolves path to scaffold.OwnerSeed, a
+// pre-existing disk file whose content diverges from the template is
+// adopted as seed content instead of being classified as drift: no op is
+// planned (the file is left untouched, matching seed's create-once/
+// 不可侵 contract), and the divergence is surfaced as a seed AdvisoryEntry
+// instead of a DriftEntry. This closes the "new seed path collides with an
+// untracked local file" gap — see docs/tech-debt/README.md. The caller
+// (rebuildManifestV2 in internal/cli/upgrade_v2.go) picks this path up
+// through its normal desired-state sweep: since the path is neither an Op
+// nor a Drift/LegacySkipped/Preserved entry, it falls through to that
+// sweep's default per-path classification, which already resolves owner=
+// seed and records DiskHash from the current (untouched) disk content.
+// Non-seed owners (including a nil ownerForPath) keep the pre-existing
+// equal->refresh / differ->drift behavior.
 func classifyUntracked(
 	plan *ReplacePlan,
 	creates *[]FileOp,
@@ -344,8 +444,11 @@ func classifyUntracked(
 	hasTemplate bool,
 	diskContent []byte,
 	hasDisk bool,
+	ownerForPath func(string) string,
 ) {
 	if !hasTemplate {
+		// Should not happen (path came from the template-or-manifest union
+		// and has no manifest entry), but guard defensively.
 		return
 	}
 	templateHash := scaffold.HashBytes(tmplContent)
@@ -358,12 +461,51 @@ func classifyUntracked(
 		plan.ManifestRefresh = append(plan.ManifestRefresh, ManifestRefreshEntry{Path: path, Hash: templateHash})
 		return
 	}
+	if ownerForPath != nil && ownerForPath(path) == scaffold.OwnerSeed {
+		plan.Advisories = append(plan.Advisories, AdvisoryEntry{Path: path, Owner: scaffold.OwnerSeed, DiskHash: diskHash, NewHash: templateHash})
+		return
+	}
 	plan.Drift = append(plan.Drift, DriftEntry{Path: path, RecordedHash: "", DiskHash: diskHash, NewHash: templateHash})
 }
 
 // ApplyOps executes plan.Ops against targetDir in order (deletes, then
 // creates, then updates, each sorted by path), stopping at the first
-// failure.
+// failure. Ops after a failure are not attempted.
+//
+// Before executing any op, ApplyOps validates every op's Path with
+// cleanPathKey; on the first invalid path it returns an error naming that
+// path and performs no filesystem operations at all (validate-all-upfront,
+// so a plan that fails validation never leaves partial-failure semantics to
+// reason about). This guards against a hand-built ReplacePlan carrying a
+// path that would resolve outside targetDir.
+//
+// In that same validate-all-upfront pass, ApplyOps also validates every op's
+// parent directory chain with ValidateRealParentChain: if any existing path
+// component between targetDir and the op's parent directory is not a real
+// directory (e.g. a symlink), ApplyOps returns an error naming that
+// component and performs no filesystem operations at all. A leaf-only Lstat
+// check (below) cannot catch this — a missing leaf under a symlinked parent
+// still reports os.ErrNotExist, so without this chain check MkdirAll/
+// WriteFile would silently create/write through the symlink to a target
+// outside targetDir.
+//
+// ApplyOps also os.Lstat's every op's target path itself (update and delete
+// targets, and create targets in case a path collides with something
+// already there): if the entry exists and is not a regular file — a symlink
+// (including a dangling one, since Lstat reports the symlink's own mode
+// without following it) or a directory — ApplyOps returns an error naming
+// the path and performs no filesystem operations at all. A missing entry
+// (os.ErrNotExist) is fine; that is the ordinary create case.
+//
+// ApplyOps never reads or writes the manifest — that is the commit barrier:
+// callers must only advance manifest state (recorded hashes for creates,
+// updates, and ReplacePlan.ManifestRefresh entries, plus dropping the
+// entries listed in ReplacePlan.ManifestRemove — the one entry in this list
+// that removes rather than advances a manifest hash) after ApplyOps returns
+// a nil error. A non-nil error means the on-disk tree may be partially
+// updated but the manifest must not be advanced; re-planning over that tree
+// with PlanCoreReplace produces a plan that completes the remaining work
+// without misclassifying the already-applied paths as drift.
 func ApplyOps(targetDir string, plan ReplacePlan) error {
 	for _, op := range plan.Ops {
 		if _, cerr := cleanPathKey(op.Path); cerr != nil {
@@ -441,7 +583,8 @@ func collectTemplateFiles(templateFS fs.FS) (map[string][]byte, error) {
 }
 
 // cleanPathKey validates raw through scaffold.CleanLocalRelPath and
-// normalizes the result to forward slashes.
+// normalizes the result to forward slashes, so template-walk paths and
+// manifest keys resolve to the same canonical form regardless of platform.
 func cleanPathKey(raw string) (string, error) {
 	clean, err := scaffold.CleanLocalRelPath(raw)
 	if err != nil {
@@ -450,10 +593,22 @@ func cleanPathKey(raw string) (string, error) {
 	return filepath.ToSlash(clean), nil
 }
 
-// ValidateRealParentChain walks every path component of relPath from
-// targetDir down to relPath's parent directory, and verifies each existing
-// component is a real directory — never a symlink or any other non-directory
-// entry.
+// ValidateRealParentChain walks every path component of relPath (a
+// slash-separated relative path, already validated e.g. via cleanPathKey)
+// from targetDir down to relPath's parent directory, and verifies each
+// existing component is a real directory — never a symlink or any other
+// non-directory entry. A missing component is fine (a later os.MkdirAll
+// creates real directories for it).
+//
+// This closes a gap a leaf-only Lstat check leaves open: if some parent
+// directory in relPath's chain is a symlink (e.g. "sub" -> /tmp/outside)
+// and the leaf itself does not exist yet, Lstat-ing the leaf alone reports
+// os.ErrNotExist — indistinguishable from the ordinary "nothing here yet"
+// case — even though the leaf's real location, once created, resolves
+// outside targetDir through the symlink. Callers that write through
+// os.MkdirAll/os.WriteFile (ApplyOps, and the exception-face writes in
+// internal/cli/upgrade_v2.go that bypass ApplyOps) must call this before
+// writing.
 func ValidateRealParentChain(targetDir, relPath string) error {
 	dir := filepath.ToSlash(filepath.Dir(filepath.ToSlash(relPath)))
 	if dir == "." || dir == "/" || dir == "" {
@@ -466,6 +621,8 @@ func ValidateRealParentChain(targetDir, relPath string) error {
 		fi, err := os.Lstat(current)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				// Missing component: fine, a later MkdirAll creates a real
+				// directory here.
 				continue
 			}
 			return fmt.Errorf("lstat %s: %w", current, err)

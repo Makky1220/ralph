@@ -5,8 +5,24 @@ import (
 	"strings"
 )
 
+// diffSeparator is the visual separator between the line-number gutter and the
+// diff prefix. Multi-byte (`│` is U+2502, three bytes in UTF-8) — code that
+// scans for this marker (e.g. Colorize) must use byte length.
 const diffSeparator = " │ "
 
+// UnifiedDiff returns a human-readable line-numbered diff representation of
+// oldText → newText at line granularity. Labels are rendered in the
+// `--- oldLabel` / `+++ newLabel` header. The algorithm is LCS-based with 3
+// lines of context. Output is a display artifact — callers must not parse it.
+//
+// Each emitted change line carries two gutter columns showing the 1-based
+// line numbers in the old and new files (blank when the line does not exist
+// on that side). The range header replaces the cryptic `@@ -a,b +c,d @@`
+// notation with a human-friendly range summary.
+//
+// When either side lacks a trailing newline, a single
+// `\ No newline at end of file` marker is appended after the diff so the
+// ambiguity is visible to a human reviewer.
 func UnifiedDiff(oldText, newText []byte, oldLabel, newLabel string) string {
 	oldLines, oldNL := splitLines(oldText)
 	newLines, newNL := splitLines(newText)
@@ -30,7 +46,7 @@ func UnifiedDiff(oldText, newText []byte, oldLabel, newLabel string) string {
 			formatRange(block.oldStart, block.oldCount),
 			formatRange(block.newStart, block.newCount))
 
-		oldNo := block.oldStart
+		oldNo := block.oldStart // 0-based; pre-increment before emit makes it 1-based.
 		newNo := block.newStart
 		for _, op := range block.ops {
 			oldCol := blank
@@ -63,6 +79,9 @@ func UnifiedDiff(oldText, newText []byte, oldLabel, newLabel string) string {
 	return b.String()
 }
 
+// formatRange renders a diff block's line range. Empty sides (count == 0)
+// collapse to "(空)" so the user can immediately tell that the file was
+// created from nothing or fully deleted on one side.
 func formatRange(start, count int) string {
 	if count == 0 {
 		return "(空)"
@@ -73,6 +92,9 @@ func formatRange(start, count int) string {
 	return fmt.Sprintf("L%d–%d", start+1, start+count)
 }
 
+// gutterWidth returns the column width needed to right-align every line
+// number that may appear across all diff blocks. Floors at 2 so single-digit files
+// still produce a stable two-column gutter.
 func gutterWidth(blocks []diffBlock) int {
 	maxLine := 0
 	for _, block := range blocks {
@@ -93,6 +115,10 @@ func gutterWidth(blocks []diffBlock) int {
 	return w
 }
 
+// splitLines splits text on '\n'. The returned slice never has a trailing
+// empty line caused by a final newline — instead, hasTrailingNewline reports
+// whether the input ended with '\n'. Empty input yields a nil slice with
+// hasTrailingNewline=false.
 func splitLines(text []byte) (lines []string, hasTrailingNewline bool) {
 	if len(text) == 0 {
 		return nil, false
@@ -130,6 +156,9 @@ type diffOp struct {
 	line string
 }
 
+// lcsDiff returns a sequence of equal/del/add ops transforming old into new.
+// Classic LCS DP + backtrack. O(m*n) time and space, acceptable for scaffold
+// files (tens to a few thousand lines).
 func lcsDiff(oldLines, newLines []string) []diffOp {
 	m, n := len(oldLines), len(newLines)
 	dp := make([][]int, m+1)
@@ -178,6 +207,9 @@ type diffBlock struct {
 	ops                []diffOp
 }
 
+// groupDiffBlocks collects runs of non-equal ops surrounded by up to `context` lines
+// of equality on each side. Adjacent changes whose context windows overlap
+// (distance <= 2*context) are merged into one diff block.
 func groupDiffBlocks(ops []diffOp, context int) []diffBlock {
 	type indexed struct {
 		op     diffOp

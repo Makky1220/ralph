@@ -25,6 +25,19 @@ type AdvisoryDiff struct {
 // RenderAdvisoryDiffs loads and renders unified diffs for each AdvisoryEntry
 // in entries, comparing disk content in targetDir against the new template
 // content in templateFS, labeled with templateVersion.
+//
+// Advisory selection is not re-derived here: entries is expected to be
+// ReplacePlan.Advisories from PlanCoreReplace, which is the source of truth
+// for which paths are advisory-worthy. This function only loads both sides
+// and renders the diff. Every path is validated with
+// scaffold.CleanLocalRelPath (via the shared cleanPathKey helper) before
+// reading, per spec AC-9.
+//
+// A missing disk file renders as a full-addition diff against an empty
+// local side. A missing template file (removed from the template since the
+// advisory was recorded) is reported as Skipped with an explanatory Note
+// rather than an error, since the template legitimately dropping a fork/seed
+// path is not a failure condition.
 func RenderAdvisoryDiffs(targetDir string, templateFS fs.FS, templateVersion string, entries []AdvisoryEntry) ([]AdvisoryDiff, error) {
 	diffs := make([]AdvisoryDiff, 0, len(entries))
 	for _, entry := range entries {

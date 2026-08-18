@@ -34,7 +34,9 @@ type BlockResult struct {
 }
 
 // BlockMarkerStyle selects the comment syntax used for a managed block's
-// BEGIN/END marker lines.
+// BEGIN/END marker lines. Different file types require different comment
+// styles: Markdown-ish files support HTML comments, but files like
+// .gitignore only support "#" line comments.
 type BlockMarkerStyle int
 
 const (
@@ -94,6 +96,11 @@ func BeginMarker(surface string) string {
 // UpdateManagedBlock updates the ralph-owned block delimited by BeginMarker /
 // EndMarker inside current, replacing only the interior with managed. It is
 // the HTML-comment-style equivalent of UpdateManagedBlockStyled.
+//
+// It is pure bytes-in/bytes-out: it never touches the filesystem. Every byte
+// outside the marker pair — including the markers themselves — is preserved
+// exactly. Callers own file I/O and must not write Content when Outcome is
+// BlockMalformed.
 func UpdateManagedBlock(current []byte, surface string, managed []byte) BlockResult {
 	return UpdateManagedBlockStyled(current, surface, managed, BlockMarkerHTML)
 }

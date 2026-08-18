@@ -10,18 +10,25 @@ import (
 	"strings"
 )
 
+// RenderOptions controls how files are expanded.
 type RenderOptions struct {
+	// TargetDir is the root directory to write files to.
 	TargetDir string
+	// Overwrite controls whether existing files are overwritten.
 	Overwrite bool
+	// SkipPaths lists source-relative paths that should not be rendered.
 	SkipPaths map[string]bool
 }
 
+// RenderResult tracks what happened during rendering.
 type RenderResult struct {
 	Created     []string
 	Overwritten []string
 	Skipped     []string
 }
 
+// RenderFS walks the given filesystem and writes files to the target directory.
+// Returns a map of relative paths to their SHA256 hashes.
 func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, error) {
 	result := &RenderResult{}
 	hashes := make(map[string]string)
@@ -35,12 +42,14 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 		if err != nil {
 			return err
 		}
+
 		if opts.SkipPaths[path] {
 			return nil
 		}
 
 		target := filepath.Join(opts.TargetDir, path)
 
+		// Boundary check: ensure target does not escape TargetDir.
 		absFile, absErr := filepath.Abs(target)
 		if absErr != nil {
 			return fmt.Errorf("resolving path %s: %w", path, absErr)
@@ -53,6 +62,7 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 			return os.MkdirAll(target, 0755)
 		}
 
+		// Read source content.
 		content, err := fs.ReadFile(src, path)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)
@@ -61,6 +71,18 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 		hash := HashBytes(content)
 		hashes[path] = hash
 
+		// Check if target already exists. Lstat (not Stat) is used
+		// deliberately: Stat follows symlinks, so a *dangling* symlink at a
+		// template path would stat as absent, get classified as a create
+		// below, and the os.WriteFile call would then write straight through
+		// the link to wherever it resolves -- outside TargetDir, defeating
+		// the boundary check above. Lstat inspects the directory entry
+		// itself, so any existing entry (regular file, valid symlink, or
+		// dangling symlink) counts as "exists" and is skipped here in
+		// non-force mode. --force still overwrites whatever the path
+		// resolves to (including following a symlink): that is explicit user
+		// consent to follow the link, not the containment gap this guards
+		// against.
 		if _, statErr := os.Lstat(target); statErr == nil {
 			if !opts.Overwrite {
 				result.Skipped = append(result.Skipped, path)
@@ -71,10 +93,14 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 			result.Created = append(result.Created, path)
 		}
 
+		// Ensure parent directory exists.
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 			return fmt.Errorf("creating parent dir for %s: %w", path, err)
 		}
 
+		// Determine file permission. go:embed returns 0444 for all files,
+		// so we cannot rely on FS metadata for execute bits. Instead, use
+		// suffix and name heuristics to identify executable scripts.
 		perm := filePerm(path)
 
 		return os.WriteFile(target, content, perm)
@@ -86,6 +112,7 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 // FilePerm returns the appropriate file permission for the given path.
 // Shell scripts (.sh suffix) and the extensionless "ralph" script in
 // scripts/ get 0755; all others get 0644.
+// Note: go:embed returns 0444 for all files, so FS metadata cannot be used.
 func FilePerm(path string) fs.FileMode {
 	if strings.HasSuffix(path, ".sh") {
 		return 0755
@@ -99,11 +126,13 @@ func FilePerm(path string) fs.FileMode {
 // filePerm is an unexported alias for internal use in this package.
 func filePerm(path string) fs.FileMode { return FilePerm(path) }
 
+// HashBytes returns the SHA256 hash of data as "sha256:<hex>".
 func HashBytes(data []byte) string {
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("sha256:%x", h)
 }
 
+// HashFile returns the SHA256 hash of a file on disk.
 func HashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
