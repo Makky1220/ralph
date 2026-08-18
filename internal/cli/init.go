@@ -191,6 +191,8 @@ func executeInit(targetDir string, cfg initConfig, force bool) error {
 		fmt.Printf("  ✓ .git exists (skipped)\n")
 	}
 
+	installManagedGitHooks(targetDir, os.Stdout, os.Stderr)
+
 	fmt.Printf("\nDone. Next steps:\n")
 	if targetDir != "." {
 		fmt.Printf("  cd %s\n", targetDir)
