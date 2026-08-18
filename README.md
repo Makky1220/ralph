@@ -36,6 +36,7 @@ go install github.com/thomas0124/ralph/cmd/ralph@latest
 
 ```
 CLAUDE.md                        ← 常時参照ガイド
+ralph.toml                       ← プロジェクト設定
 .claude/
   settings.json                  ← フック + パーミッション設定
   hooks/                         ← 7 本のランタイムガード
@@ -49,9 +50,9 @@ scripts/
   …（他 5 本）
 docs/
   plans/active/   plans/archive/
-  reports/        tech-debt/
+  specs/          reports/
+  tech-debt/      evidence/
   quality/definition-of-done.md
-ralph.toml                       ← プロジェクト設定
 ```
 
 ---
@@ -74,13 +75,26 @@ ralph.toml                       ← プロジェクト設定
 ## 言語パック
 
 ```sh
-ralph pack add typescript   # tsc + eslint + prettier
+ralph pack add typescript   # tsc + eslint
 ralph pack add python       # mypy + ruff + pytest
 ralph pack add golang       # go vet + staticcheck + golangci-lint
 ralph pack add rust         # cargo check + clippy + fmt
+ralph pack add dart         # dart analyze + flutter test
+ralph pack add terraform    # terraform validate + tflint
 ```
 
-パックは `.claude/rules/<lang>.md` と `scripts/verify-<lang>.sh` を追加する。
+パックは以下のファイルをプロジェクトに追加する：
+
+```
+packs/languages/<lang>/
+  verify.sh              ← POSIX sh 製の検証スクリプト
+  rule.md                ← 言語固有のルール定義
+  README.md              ← パックのドキュメント
+.claude/rules/ralph/
+  <lang>.md              ← Claude Code に読み込まれるルール
+```
+
+`verify.sh` は `HARNESS_VERIFY_MODE`（`static` / `test` / `all`）と `RALPH_VERIFY_PROJECT_ROOTS`（モノレポ向けルート指定）に対応している。
 
 ---
 
@@ -90,7 +104,7 @@ ralph pack add rust         # cargo check + clippy + fmt
 ralph upgrade
 ```
 
-テンプレートの変更とあなたのローカル変更を 3-way マージで統合する。コンフリクトは対話的に解決できる。
+テンプレートの変更とローカル変更を 3-way マージで統合する。コンフリクトは対話的に解決できる。
 
 ---
 
@@ -102,11 +116,22 @@ ralph doctor
 
 チェック内容：
 
-- Claude CLI (`claude`) の存在
+- Claude CLI (`claude`) の存在（`ralph.toml` の `require_claude_cli` で制御）
+- Go のインストール状況（`require_go` で制御）
 - `.claude/settings.json` の整合性
 - フックスクリプトの実行可能ビット
 - マニフェストバージョン
 - 有効な言語パックの検証スクリプト
+
+### ralph.toml
+
+`ralph.toml` でプロジェクトレベルの挙動を設定できる：
+
+```toml
+[doctor]
+require_claude_cli = true   # false にすると警告のみ
+require_go         = false  # true にすると go 必須チェックを有効化
+```
 
 ---
 
