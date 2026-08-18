@@ -1,40 +1,66 @@
 #!/usr/bin/env sh
-# プロジェクトで使われている言語を検出して、対応する言語パックが存在するものを出力する。
 set -eu
 
-detected=""
+seen=""
 
-# TypeScript / JavaScript
-if find . \( -name "*.ts" -o -name "*.tsx" -o -name "package.json" \) \
-     -not -path "./.git/*" -not -path "./node_modules/*" \
-     2>/dev/null | head -1 | grep -q .; then
-  if [ -d "packs/languages/typescript" ]; then
-    detected="$detected typescript"
-  fi
+emit() {
+  name="$1"
+  case " $seen " in
+    *" $name "*) ;;
+    *)
+      seen="$seen $name"
+      printf '%s\n' "$name"
+      ;;
+  esac
+}
+
+has_file() {
+  marker="$(find . \
+    \( -type d \( \
+      -name .git -o \
+      -name node_modules -o \
+      -name .pnpm-store -o \
+      -name .yarn -o \
+      -name .venv -o \
+      -name venv -o \
+      -name env -o \
+      -name __pycache__ -o \
+      -name .mypy_cache -o \
+      -name .pytest_cache -o \
+      -name .ruff_cache -o \
+      -name target -o \
+      -name .dart_tool -o \
+      -name .terraform -o \
+      -name .terragrunt-cache -o \
+      -name .harness -o \
+      -name coverage -o \
+      -name dist -o \
+      -name build \
+    \) -prune \) -o \
+    -type f \( "$@" \) -print -quit 2>/dev/null)"
+  [ -n "$marker" ]
+}
+
+if has_file -name package.json -o -name tsconfig.json -o -name 'tsconfig.*.json' -o -name '*.ts' -o -name '*.tsx'; then
+  emit typescript
 fi
 
-# Python
-if find . -name "*.py" -not -path "./.git/*" \
-     2>/dev/null | head -1 | grep -q .; then
-  if [ -d "packs/languages/python" ]; then
-    detected="$detected python"
-  fi
+if has_file -name pyproject.toml -o -name requirements.txt -o -name 'requirements-*.txt' -o -name setup.py -o -name tox.ini -o -name '*.py'; then
+  emit python
 fi
 
-# Go
-if find . -name "*.go" -not -path "./.git/*" \
-     2>/dev/null | head -1 | grep -q .; then
-  if [ -d "packs/languages/golang" ]; then
-    detected="$detected golang"
-  fi
+if has_file -name Cargo.toml -o -name '*.rs'; then
+  emit rust
 fi
 
-# Rust
-if find . -name "*.rs" -not -path "./.git/*" \
-     2>/dev/null | head -1 | grep -q .; then
-  if [ -d "packs/languages/rust" ]; then
-    detected="$detected rust"
-  fi
+if has_file -name go.mod; then
+  emit golang
 fi
 
-printf '%s\n' "$detected" | tr -s ' ' '\n' | grep -v '^$' || true
+if has_file -name pubspec.yaml -o -name '*.dart'; then
+  emit dart
+fi
+
+if has_file -name '.terraform.lock.hcl' -o -name '*.tf' -o -name '*.tofu'; then
+  emit terraform
+fi

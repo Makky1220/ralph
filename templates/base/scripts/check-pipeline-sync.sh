@@ -2,7 +2,7 @@
 set -eu
 
 # Pipeline order sync checker
-# Canonical: /self-review -> /verify -> /test -> /sync-docs -> /pr
+# Canonical: /self-review -> /verify -> /test -> /sync-docs -> /cross-review -> /pr
 # Source of truth: .claude/rules/ralph/post-implementation-pipeline.md
 
 CANONICAL=".claude/rules/ralph/post-implementation-pipeline.md"

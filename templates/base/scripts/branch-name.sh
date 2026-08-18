@@ -52,9 +52,24 @@ field_value() {
   ' "$_file"
 }
 
+plan_manifest() {
+  _path="$1"
+  if [ -d "$_path" ]; then
+    _path="${_path%/}/_manifest.md"
+  fi
+  if [ ! -f "$_path" ]; then
+    printf 'branch-name: plan file not found: %s\n' "$_path" >&2
+    exit 1
+  fi
+  printf '%s\n' "$_path"
+}
+
 plan_slug() {
   _path="$1"
   _base="$(basename "$_path" .md)"
+  if [ "$_base" = "_manifest" ]; then
+    _base="$(basename "$(dirname "$_path")")"
+  fi
   printf '%s' "$_base" |
     sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-//' |
     tr '[:upper:]' '[:lower:]' |
@@ -70,11 +85,7 @@ issue_number() {
 }
 
 from_plan() {
-  _plan="$1"
-  if [ ! -f "$_plan" ]; then
-    printf 'branch-name: plan file not found: %s\n' "$_plan" >&2
-    exit 1
-  fi
+  _plan="$(plan_manifest "$1")"
   _type="$(field_value "Type" "$_plan" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-].*$//' || true)"
   _type="$(trim "$_type")"
   if ! is_allowed_type "$_type"; then

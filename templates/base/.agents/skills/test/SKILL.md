@@ -1,7 +1,6 @@
 ---
 name: test
 description: Run behavioral tests (unit, integration, regression) and produce a test report. Tests must pass before PR creation. Invoke automatically after /verify completes.
-allowed-tools: Read, Grep, Glob, Bash, Write
 ---
 Run tests and write a report to `docs/reports/`.
 

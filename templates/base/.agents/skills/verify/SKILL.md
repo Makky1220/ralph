@@ -1,7 +1,6 @@
 ---
 name: verify
 description: Verify spec compliance and run static analysis for a change. Checks acceptance criteria, documentation drift, linters, and type checks. Does NOT run tests — that is /test. Invoke automatically after /self-review completes.
-allowed-tools: Read, Grep, Glob, Bash, Write
 ---
 Verify the current work against the plan's acceptance criteria and run static analysis.
 

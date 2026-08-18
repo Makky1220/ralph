@@ -1,7 +1,6 @@
 ---
 name: sync-docs
 description: Sync plans, docs, and instruction files after behavior, commands, contracts, or workflows change. Also covers harness-internal consistency after skill, hook, rule, or script changes. Invoked after /test and before /cross-review as the doc-maintainer agent; inline execution is only a dispatch-failure fallback.
-allowed-tools: Read, Grep, Glob, Write, Edit, Bash
 ---
 Use this skill when implementation or harness structure changed enough that documentation may have drifted.
 

@@ -11,12 +11,12 @@ fi
 
 plan="none"
 if [ -d docs/plans/active ]; then
-  plan="$(find docs/plans/active -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort | tail -n 1)"
+  plan="$(find docs/plans/active -maxdepth 1 -type f -name '*.md' | sort | tail -n 1)"
   if [ -z "$plan" ]; then
     plan="none"
   fi
 fi
 
-msg="ハーネスリマインダー: リスクのある複数ファイル作業には docs/plans/active を使用し、完了宣言の前に ./scripts/run-verify.sh を実行すること。ブランチ: $branch。アクティブプラン: $plan。"
+msg="Harness reminder: use docs/plans/active for risky or multi-file work, keep AGENTS.md as a map not a manual, and run ./scripts/run-verify.sh before claiming done. Branch: $branch. Active plan: $plan."
 escaped="$(printf '%s' "$msg" | sed 's/"/\\\"/g')"
 printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$escaped"

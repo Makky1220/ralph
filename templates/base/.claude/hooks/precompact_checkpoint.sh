@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
+mkdir -p .harness/state
+
+ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 branch="unknown"
 if command -v git >/dev/null 2>&1; then
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf '%s' 'unknown')"
@@ -8,18 +11,40 @@ fi
 
 plan="none"
 if [ -d docs/plans/active ]; then
-  plan="$(find docs/plans/active -maxdepth 1 -type f -name '*.md' 2>/dev/null | sort | tail -n 1)"
-  [ -n "$plan" ] || plan="none"
+  plan="$(find docs/plans/active -maxdepth 1 -type f -name '*.md' | sort | tail -n 1)"
+  if [ -z "$plan" ]; then
+    plan="none"
+  fi
 fi
 
-needs_verify="false"
-[ -f .harness/state/needs-verify ] && needs_verify="true"
+{
+  printf '%s\n\n' '# Pre-compact checkpoint'
+  printf '%s\n' "- Timestamp: $ts"
+  printf '%s\n' "- Branch: $branch"
+  printf '%s\n\n' "- Active plan: $plan"
+  printf '%s\n\n' '## Git status'
+  if command -v git >/dev/null 2>&1; then
+    git status --short 2>/dev/null || true
+  else
+    printf '%s\n' 'git not available'
+  fi
+} > .harness/state/precompact-checkpoint.md
 
-if [ "$needs_verify" = "true" ]; then
-  msg="コンパクション前チェックポイント: ブランチ=$branch, プラン=$plan。未コミットの変更がある場合は WIP コミットを作成してください（feature ブランチのみ）。verify が未実行です。"
-else
-  msg="コンパクション前チェックポイント: ブランチ=$branch, プラン=$plan。"
+# WIP commit on feature branches before context compaction
+if command -v git >/dev/null 2>&1; then
+  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf '%s' 'unknown')"
+  case "$current_branch" in
+    main|master|unknown) ;;
+    *)
+      if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+        git add -A 2>/dev/null || true
+        if ! git commit -m 'wip: checkpoint before context compaction' 2>/dev/null; then
+          mkdir -p .harness/logs
+          printf '%s WIP commit failed (precompact on branch %s)\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$current_branch" >> .harness/logs/hook-failures.log
+        fi
+      fi
+      ;;
+  esac
 fi
 
-escaped="$(printf '%s' "$msg" | sed 's/"/\\\"/g')"
-printf '{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"%s"}}\n' "$escaped"
+exit 0

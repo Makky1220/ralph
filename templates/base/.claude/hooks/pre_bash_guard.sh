@@ -17,34 +17,38 @@ emit_decision() {
 
 case "$command" in
   *"sudo "*)
-    emit_decision "deny" "ハーネス内で sudo は禁止です。プロジェクトローカルのコマンドを使用してください。"
+    emit_decision "deny" "Avoid sudo inside the harness. Use project-local commands or escalate to a human only if truly necessary."
     ;;
   *"git push --force"*|*"git push -f"*)
-    emit_decision "deny" "Force push はスキャフォールドにより禁止されています。"
+    emit_decision "deny" "Force push is blocked by the scaffold."
     ;;
   *"git reset --hard"*)
-    emit_decision "deny" "Hard reset はスキャフォールドにより禁止されています。"
+    emit_decision "deny" "Hard reset is blocked by the scaffold."
     ;;
   *".git/"*">"*|*"> .git"*|*"tee .git"*)
-    emit_decision "ask" ".git への直接書き込みには明示的な確認が必要です。"
+    emit_decision "ask" "Direct writes into .git require explicit confirmation."
     ;;
   *".env"*">"*|*"> .env"*|*"tee .env"*)
-    emit_decision "ask" "シークレットファイルへの書き込みには明示的な確認が必要です。"
+    emit_decision "ask" "Secret or environment file writes require explicit confirmation."
     ;;
   *"rm -rf "*)
-    emit_decision "ask" "再帰削除には明示的な確認が必要です。"
+    emit_decision "ask" "Recursive delete requires explicit confirmation."
     ;;
   *"gh pr create"*)
-    emit_decision "ask" "gh pr create を検出。/pr スキル経由で実行していますか？ /pr スキルは日本語テンプレート・事前チェック・プランアーカイブを強制します。"
+    emit_decision "ask" "gh pr create を検出。/pr スキル（Skill tool）経由で実行していますか？ /pr スキルは日本語テンプレート、事前チェック、プランアーカイブを強制します。直接実行は非推奨です。"
     ;;
 esac
 
+# Layer: detect command substitution inside double-quoted git commit -m messages
+# Prevents shell expansion of backticks or $() that could leak env vars / secrets
 case "$command" in
   *"git commit"*"-m "*)
+    # Extract the part after -m
     msg_part="${command#*-m }"
+    # Check if message uses double quotes containing backticks or $(...)
     case "$msg_part" in
       '"'*'`'*|'"'*'$('*)
-        emit_decision "deny" "コミットメッセージのダブルクォート内にバッククォートまたは \$() を検出しました。シークレット漏洩の恐れがあります。シングルクォートまたは HEREDOC を使用してください。"
+        emit_decision "deny" "コミットメッセージのダブルクォート内にバッククォートまたは \$() を検出しました。シェルのコマンド置換として解釈され、環境変数やシークレットが漏洩する恐れがあります。代わりにシングルクォートまたは HEREDOC (<<'EOF') を使用してください。"
         ;;
     esac
     ;;
