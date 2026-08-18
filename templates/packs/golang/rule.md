@@ -1,41 +1,13 @@
-# Go ルール
+---
+paths:
+  - "**/*.go"
+  - "go.mod"
+  - "go.sum"
+---
+# Go rules
 
-このルールは Go プロジェクトでのみアクティブになる。
-
-## エラーハンドリング
-
-- `_` でエラーを無視しない — 必ずハンドルするか伝播させる
-- エラーラップには `fmt.Errorf("context: %w", err)` を使う
-- 関数内でパニックしない — エラーを返す
-- センチネルエラーには `errors.Is` / `errors.As` を使う
-
-## 型とインターフェース
-
-- インターフェースは小さく保つ（1-2 メソッド）
-- 実装側ではなく使用側でインターフェースを定義する
-- 具体型の代わりにインターフェースを返さない（不必要な抽象化）
-
-## goroutine と並行性
-
-- goroutine を起動したら必ずライフタイムを管理する
-- チャネルのゼロ値（`nil`）の動作を理解して使う
-- データ競合を `go test -race` で検出する
-
-## コード品質
-
-- `go vet` と `staticcheck` の警告をゼロにする
-- `gofmt` / `goimports` でフォーマットする（CI で強制）
-- パッケージコメント（`// Package foo ...`）を書く
-- テーブル駆動テストを使う
-
-## テスト
-
-- `testing.T` を使ったユニットテストを書く
-- テーブル駆動テストで境界条件を網羅する
-- 統合テストには `t.Skip` で `-short` フラグを活用する
-
-## 検証
-
-```sh
-./scripts/verify-golang.sh
-```
+- Prefer flat package layouts with clear naming over deep nesting.
+- Keep error handling explicit; do not silently swallow errors.
+- Use `go fmt`, `go vet`, and `go test ./...` before completion when the project supports them.
+- Prefer interfaces at consumption sites, not at definition sites.
+- Keep concurrency boundaries (goroutines, channels) visible and well-documented.

@@ -1,30 +1,14 @@
-# Go パック
+# Go pack
 
-Go プロジェクト向けの追加ルールと検証スクリプト。
+Default verification order:
+- gofmt
+- go vet
+- golangci-lint (if available)
+- staticcheck (if available)
+- go test
 
-## 含まれるもの
-
-- `.claude/rules/golang.md` — Go 固有のコーディングルール
-- `scripts/verify-golang.sh` — vet・Lint・テスト検証
-
-## 要件
-
-- Go 1.21+
-- プロジェクトに `go.mod` が存在すること
-
-## インストール
-
-```sh
-ralph pack add golang
-```
-
-## 検証スクリプトが使うツール
-
-| ツール | 目的 | 設定ファイル |
-|-------|------|------------|
-| `go vet` | 静的解析 | — |
-| `staticcheck` | 拡張解析 | `staticcheck.conf` |
-| `golangci-lint` | 統合 Lint | `.golangci.yml` |
-| `go test` | テスト | — |
-
-`staticcheck` と `golangci-lint` が存在しない場合はそのステップをスキップする。
+Customize this pack if your repo uses:
+- custom golangci-lint config (.golangci.yml)
+- build tags or constraint-gated tests
+- integration tests behind a flag
+- workspace mode (go.work)

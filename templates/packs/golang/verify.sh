@@ -1,84 +1,130 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
-PASS=0
-FAIL=0
-SKIP=0
+mode="${HARNESS_VERIFY_MODE:-all}"
+case "$mode" in
+  static|test|all) ;;
+  *)
+    echo "Unknown HARNESS_VERIFY_MODE: $mode" >&2
+    exit 2
+    ;;
+esac
 
-_pass() { echo "  [PASS] $*"; ((PASS++)); }
-_fail() { echo "  [FAIL] $*"; ((FAIL++)); }
-_skip() { echo "  [SKIP] $*"; ((SKIP++)); }
+repo_root="$PWD"
+roots_file="$(mktemp "${TMPDIR:-/tmp}/ralph-go-roots.XXXXXX")"
+cleanup() {
+  rm -f "$roots_file"
+}
+trap cleanup EXIT HUP INT TERM
 
-echo "=== Go 検証 ==="
+find_project_roots() {
+  find . \
+    \( -type d \( \
+      -name .git -o \
+      -name .harness -o \
+      -name vendor -o \
+      -name node_modules -o \
+      -name dist -o \
+      -name build \
+    \) -prune \) -o \
+    -type f -name go.mod -print 2>/dev/null |
+    while IFS= read -r marker; do
+      dirname "$marker"
+    done |
+    sort -u
+}
 
-if ! command -v go &>/dev/null; then
-  echo "[ERROR] go が見つからない" >&2
+root_selected() {
+  [ -z "${RALPH_VERIFY_PROJECT_ROOTS:-}" ] && return 0
+  root="${1#./}"
+  [ -n "$root" ] || root="."
+
+  for selected in $RALPH_VERIFY_PROJECT_ROOTS; do
+    selected="${selected#./}"
+    [ -n "$selected" ] || selected="."
+    [ "$root" = "$selected" ] && return 0
+  done
+  return 1
+}
+
+find_project_roots |
+  while IFS= read -r project_root; do
+    if root_selected "$project_root"; then
+      printf '%s\n' "$project_root"
+    fi
+  done > "$roots_file"
+
+if [ ! -s "$roots_file" ]; then
+  echo "Skipping Go verifier: no Go project roots found."
+  exit 0
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "go is required for Go verification."
   exit 1
 fi
 
-echo "Go: $(go version)"
-
-# --- go vet ---
-echo ""
-echo "--- 静的解析 (go vet) ---"
-if go vet ./... 2>&1; then
-  _pass "go vet"
-else
-  _fail "go vet エラーあり"
+if [ -z "${GOCACHE:-}" ]; then
+  GOCACHE="$repo_root/.harness/cache/go-build"
+  export GOCACHE
 fi
+mkdir -p "$GOCACHE"
 
-# --- gofmt ---
-echo ""
-echo "--- フォーマット (gofmt) ---"
-UNFORMATTED=$(gofmt -l . 2>&1)
-if [ -z "$UNFORMATTED" ]; then
-  _pass "gofmt"
-else
-  echo "  フォーマット違反ファイル:"
-  echo "$UNFORMATTED" | sed 's/^/    /'
-  _fail "フォーマット違反あり (gofmt -w で修正)"
+if [ -z "${STATICCHECK_CACHE:-}" ]; then
+  STATICCHECK_CACHE="$repo_root/.harness/cache/staticcheck"
+  export STATICCHECK_CACHE
 fi
+mkdir -p "$STATICCHECK_CACHE"
 
-# --- staticcheck ---
-echo ""
-echo "--- 拡張解析 (staticcheck) ---"
-if ! command -v staticcheck &>/dev/null; then
-  _skip "staticcheck が見つからない (go install honnef.co/go/tools/cmd/staticcheck@latest)"
-else
-  if staticcheck ./... 2>&1; then
-    _pass "staticcheck"
+run_static() {
+  unformatted=$(gofmt -l .)
+  if [ -n "$unformatted" ]; then
+    echo "gofmt: the following files are not formatted:"
+    echo "$unformatted"
+    status=1
   else
-    _fail "staticcheck エラーあり"
+    echo "gofmt: ok"
   fi
-fi
 
-# --- golangci-lint ---
-echo ""
-echo "--- 統合 Lint (golangci-lint) ---"
-if ! command -v golangci-lint &>/dev/null; then
-  _skip "golangci-lint が見つからない"
-else
-  if golangci-lint run ./... 2>&1; then
-    _pass "golangci-lint"
+  go vet ./... || status=1
+
+  if command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint run ./... || status=1
   else
-    _fail "golangci-lint エラーあり"
+    echo "Skipping golangci-lint: command not found."
   fi
-fi
 
-# --- go test ---
-echo ""
-echo "--- テスト (go test) ---"
-if go test -race ./... 2>&1; then
-  _pass "go test -race"
-else
-  _fail "テスト失敗あり"
-fi
+  if command -v staticcheck >/dev/null 2>&1; then
+    staticcheck ./... || status=1
+  else
+    echo "Skipping staticcheck: command not found."
+  fi
+}
 
-# --- 結果 ---
-echo ""
-echo "=== 結果: PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP ==="
+run_tests() {
+  go test ./... || status=1
+}
 
-if [ "$FAIL" -gt 0 ]; then
-  exit 1
-fi
-exit 0
+verify_root() {
+  project_root="$1"
+  echo "==> Go project root: $project_root"
+
+  status=0
+  case "$mode" in
+    static) run_static ;;
+    test)   run_tests ;;
+    all)    run_static; run_tests ;;
+  esac
+
+  return "$status"
+}
+
+overall_status=0
+while IFS= read -r project_root; do
+  [ -n "$project_root" ] || continue
+  if ! (cd "$project_root" && verify_root "$project_root"); then
+    overall_status=1
+  fi
+done < "$roots_file"
+
+exit "$overall_status"

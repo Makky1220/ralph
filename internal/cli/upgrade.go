@@ -157,14 +157,18 @@ func runUpgradeIOWithOptions(targetDir string, opts upgradeOptions, in io.Reader
 			continue
 		}
 
-		var packDiffs []upgrade.FileDiff
+		packManifest := splitManifestForPackOnly(oldManifest, pack)
+		packDir := filepath.Join(absDir, packRelDir(pack))
+		packPayloadDiffs, pDiffErr := upgrade.ComputeDiffsWithManifest(packManifest, packDir, packFS, false)
+		if pDiffErr == nil {
+			for i := range packPayloadDiffs {
+				packPayloadDiffs[i].Path = filepath.Join(packRelDir(pack), packPayloadDiffs[i].Path)
+			}
+			diffs = append(diffs, packPayloadDiffs...)
+		}
 		if content, ok, err := packRuleContent(packFS); err == nil && ok {
-			packDiffs = append(packDiffs, upgrade.ComputeFileDiff(oldManifest, absDir, packRuleRelPath(pack), content))
+			diffs = append(diffs, upgrade.ComputeFileDiff(oldManifest, absDir, packRuleRelPath(pack), content))
 		}
-		if content, ok, err := packVerifyContent(packFS); err == nil && ok {
-			packDiffs = append(packDiffs, upgrade.ComputeFileDiff(oldManifest, absDir, packVerifyRelPath(pack), content))
-		}
-		diffs = append(diffs, packDiffs...)
 		retainedPacks = append(retainedPacks, pack)
 	}
 
@@ -289,25 +293,43 @@ func runUpgradeIOWithOptions(targetDir string, opts upgradeOptions, in io.Reader
 	return nil
 }
 
-func packManagedPaths(pack string) []string {
-	return []string{
-		filepath.ToSlash(packRuleRelPath(pack)),
-		filepath.ToSlash(packVerifyRelPath(pack)),
+// splitManifestForPackOnly builds a sub-manifest containing only the payload
+// files for a single pack (i.e. files inside packs/languages/<pack>/), with
+// keys stripped of the packRelDir prefix so they match what ComputeDiffsWithManifest
+// expects when given a PackFS rooted at the pack directory.
+func splitManifestForPackOnly(src *scaffold.Manifest, pack string) *scaffold.Manifest {
+	out := scaffold.NewManifest(src.Meta.Version)
+	prefix := filepath.ToSlash(packRelDir(pack)) + "/"
+	for k, v := range src.Files {
+		slashPath := filepath.ToSlash(k)
+		if strings.HasPrefix(slashPath, prefix) {
+			stripped := strings.TrimPrefix(slashPath, prefix)
+			out.Files[stripped] = v
+		}
 	}
+	return out
+}
+
+func isPackManagedPath(pack, slashPath string) bool {
+	packPrefix := filepath.ToSlash(packRelDir(pack)) + "/"
+	ruleFile := filepath.ToSlash(packRuleRelPath(pack))
+	return strings.HasPrefix(slashPath, packPrefix) || slashPath == ruleFile
 }
 
 func splitManifestForBase(m *scaffold.Manifest) *scaffold.Manifest {
 	out := scaffold.NewManifest(m.Meta.Version)
 	out.Meta = m.Meta
 	out.Files = make(map[string]scaffold.ManifestFile, len(m.Files))
-	packPaths := make(map[string]bool)
-	for _, pack := range m.Meta.Packs {
-		for _, p := range packManagedPaths(pack) {
-			packPaths[p] = true
-		}
-	}
 	for k, v := range m.Files {
-		if !packPaths[filepath.ToSlash(k)] {
+		slashPath := filepath.ToSlash(k)
+		managed := false
+		for _, pack := range m.Meta.Packs {
+			if isPackManagedPath(pack, slashPath) {
+				managed = true
+				break
+			}
+		}
+		if !managed {
 			out.Files[k] = v
 		}
 	}
@@ -315,9 +337,9 @@ func splitManifestForBase(m *scaffold.Manifest) *scaffold.Manifest {
 }
 
 func preservePackState(src *scaffold.Manifest, pack string, dst map[string]scaffold.ManifestFile) {
-	for _, p := range packManagedPaths(pack) {
-		if v, ok := src.Files[p]; ok {
-			dst[p] = v
+	for k, v := range src.Files {
+		if isPackManagedPath(pack, filepath.ToSlash(k)) {
+			dst[k] = v
 		}
 	}
 }

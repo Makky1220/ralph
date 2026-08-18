@@ -1,28 +1,12 @@
-# Rust パック
+# Rust pack
 
-Rust プロジェクト向けの追加ルールと検証スクリプト。
+Default verification order:
+- cargo fmt --check
+- cargo clippy --all-targets --all-features -- -D warnings
+- cargo test --all-features
 
-## 含まれるもの
-
-- `.claude/rules/rust.md` — Rust 固有のコーディングルール
-- `scripts/verify-rust.sh` — チェック・Clippy・フォーマット検証
-
-## 要件
-
-- Rust 1.75+ (edition 2021)
-- プロジェクトに `Cargo.toml` が存在すること
-
-## インストール
-
-```sh
-ralph pack add rust
-```
-
-## 検証スクリプトが使うツール
-
-| ツール | 目的 | 設定ファイル |
-|-------|------|------------|
-| `cargo check` | コンパイル検査 | `Cargo.toml` |
-| `cargo clippy` | Lint | `.cargo/config.toml` |
-| `cargo fmt` | フォーマット | `rustfmt.toml` |
-| `cargo test` | テスト | — |
+Customize this pack if your workspace needs:
+- package-level selection
+- feature-flag subsets
+- integration tests or nextest
+- rustfmt or clippy config overrides

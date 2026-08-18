@@ -10,7 +10,7 @@ case "$mode" in
     ;;
 esac
 
-roots_file="$(mktemp "${TMPDIR:-/tmp}/ralph-python-roots.XXXXXX")"
+roots_file="$(mktemp "${TMPDIR:-/tmp}/ralph-dart-roots.XXXXXX")"
 cleanup() {
   rm -f "$roots_file"
 }
@@ -20,23 +20,11 @@ find_project_roots() {
   find . \
     \( -type d \( \
       -name .git -o \
-      -name .venv -o \
-      -name venv -o \
-      -name env -o \
-      -name __pycache__ -o \
-      -name .mypy_cache -o \
-      -name .pytest_cache -o \
-      -name .ruff_cache -o \
+      -name .dart_tool -o \
       -name build -o \
-      -name dist \
+      -name .pub-cache \
     \) -prune \) -o \
-    -type f \( \
-      -name pyproject.toml -o \
-      -name requirements.txt -o \
-      -name 'requirements-*.txt' -o \
-      -name setup.py -o \
-      -name tox.ini \
-    \) -print 2>/dev/null |
+    -type f -name pubspec.yaml -print 2>/dev/null |
     while IFS= read -r marker; do
       dirname "$marker"
     done |
@@ -64,44 +52,64 @@ find_project_roots |
   done > "$roots_file"
 
 if [ ! -s "$roots_file" ]; then
-  echo "Skipping Python verifier: no Python project roots found."
+  echo "Skipping Dart verifier: no Dart project roots found."
   exit 0
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required for Python verification."
-  exit 1
-fi
+status=0
 
-run_static() {
-  if command -v ruff >/dev/null 2>&1; then
-    ruff check . || status=1
-  else
-    echo "Skipping ruff: command not found."
+select_tool() {
+  is_flutter=false
+  if grep -q 'flutter:' pubspec.yaml 2>/dev/null; then
+    is_flutter=true
   fi
 
-  if command -v mypy >/dev/null 2>&1; then
-    mypy . || status=1
+  if [ "$is_flutter" = true ]; then
+    if ! command -v flutter >/dev/null 2>&1; then
+      echo "flutter is required for Flutter project verification."
+      return 1
+    fi
+    tool="flutter"
   else
-    echo "Skipping mypy: command not found."
+    if ! command -v dart >/dev/null 2>&1; then
+      echo "dart is required for Dart verification."
+      return 1
+    fi
+    tool="dart"
+  fi
+}
+
+run_static() {
+  if command -v dart >/dev/null 2>&1; then
+    dart format --output=none --set-exit-if-changed . || status=1
+  elif [ "$tool" = "flutter" ]; then
+    flutter format --output=none --set-exit-if-changed . || status=1
+  fi
+
+  "$tool" analyze --fatal-infos || status=1
+
+  if grep -q 'build_runner:' pubspec.yaml 2>/dev/null; then
+    echo "build_runner detected. Run 'dart run build_runner build' if generated files are stale."
   fi
 }
 
 run_tests() {
-  if command -v pytest >/dev/null 2>&1; then
-    pytest -q || status=1
-  elif python3 -c "import pytest" >/dev/null 2>&1; then
-    python3 -m pytest -q || status=1
+  if [ -d test ]; then
+    "$tool" test || status=1
   else
-    echo "Skipping pytest: command not found."
+    echo "Skipping tests: test/ directory not found."
   fi
 }
 
 verify_root() {
   project_root="$1"
-  echo "==> Python project root: $project_root"
+  echo "==> Dart project root: $project_root"
 
   status=0
+  if ! select_tool; then
+    return 1
+  fi
+
   case "$mode" in
     static) run_static ;;
     test)   run_tests ;;

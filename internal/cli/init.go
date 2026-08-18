@@ -142,46 +142,18 @@ func executeInit(targetDir string, cfg initConfig, force bool) error {
 	printRenderSummary("base", result)
 
 	for _, pack := range cfg.Packs {
-		packFS, err := scaffold.PackFS(pack)
+		prr, err := renderPackInto(targetDir, pack, force)
 		if err != nil {
 			fmt.Printf("  ⚠ pack %s: %v\n", pack, err)
 			continue
 		}
-
-		// All pack files are mapped explicitly; bulk render is skipped.
-		packResult := &scaffold.RenderResult{}
-
-		renderPackMappedFile := func(content []byte, relPath string) {
-			r, hash, err := renderMappedFile(targetDir, relPath, content, force)
-			if err != nil {
-				fmt.Printf("  ⚠ pack %s %s: %v\n", pack, relPath, err)
-				return
-			}
-			hashes[relPath] = hash
-			if len(r.Created)+len(r.Overwritten) > 0 {
-				bp, err := scaffold.WriteBaseline(targetDir, relPath, content)
-				if err != nil {
-					fmt.Printf("  ⚠ pack %s baseline %s: %v\n", pack, relPath, err)
-					return
-				}
-				baselinePaths[relPath] = bp
-			}
-			mergeRenderResult(packResult, r)
+		for k, v := range prr.hashes {
+			hashes[k] = v
 		}
-
-		if content, ok, err := packRuleContent(packFS); err != nil {
-			fmt.Printf("  ⚠ pack %s rule: %v\n", pack, err)
-		} else if ok {
-			renderPackMappedFile(content, packRuleRelPath(pack))
+		for k, v := range prr.baselinePaths {
+			baselinePaths[k] = v
 		}
-
-		if content, ok, err := packVerifyContent(packFS); err != nil {
-			fmt.Printf("  ⚠ pack %s verify: %v\n", pack, err)
-		} else if ok {
-			renderPackMappedFile(content, packVerifyRelPath(pack))
-		}
-
-		printRenderSummary("pack/"+pack, packResult)
+		printRenderSummary("pack/"+pack, prr.result)
 	}
 
 	manifest := scaffold.NewManifest(Version)

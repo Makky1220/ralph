@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/thomas0124/ralph/internal/config"
 	"github.com/thomas0124/ralph/internal/scaffold"
 )
 
@@ -34,9 +35,19 @@ type checkResult struct {
 }
 
 func runDoctor(targetDir string) error {
+	cfg, cfgErr := config.Load(filepath.Join(targetDir, "ralph.toml"))
 	var results []checkResult
 
-	results = append(results, checkClaudeCLI())
+	if cfgErr != nil && !errors.Is(cfgErr, fs.ErrNotExist) {
+		results = append(results, checkResult{
+			Name:   "ralph.toml",
+			Status: "warn",
+			Detail: fmt.Sprintf("parse error: %v — using defaults", cfgErr),
+		})
+	}
+
+	results = append(results, checkClaudeCLI(cfg))
+	results = append(results, checkGo(cfg))
 	results = append(results, checkHooks(targetDir))
 	results = append(results, checkManifestVersion(targetDir))
 	results = append(results, checkInstalledPacks(targetDir)...)
@@ -48,6 +59,8 @@ func runDoctor(targetDir string) error {
 	for _, r := range results {
 		icon := "✓"
 		switch r.Status {
+		case "info":
+			icon = "ℹ"
 		case "warn":
 			icon = "⚠"
 		case "fail":
@@ -101,16 +114,44 @@ func probeBinary(bin string) (string, error) {
 	return "", fmt.Errorf("%s --version produced no output", bin)
 }
 
-func checkClaudeCLI() checkResult {
+func checkClaudeCLI(cfg config.Config) checkResult {
 	r := checkResult{Name: "Claude Code CLI"}
 	version, err := probeBinary("claude")
 	if err != nil {
-		r.Status = "fail"
-		r.Detail = fmt.Sprintf("claude unusable: %v", err)
+		if cfg.Doctor.RequireClaudeCLI {
+			r.Status = "fail"
+			r.Detail = fmt.Sprintf("claude unusable: %v", err)
+		} else {
+			r.Status = "warn"
+			r.Detail = fmt.Sprintf("claude unusable (not required): %v", err)
+		}
 		return r
 	}
 	r.Status = "pass"
 	r.Detail = version
+	return r
+}
+
+func checkGo(cfg config.Config) checkResult {
+	r := checkResult{Name: "Go"}
+	_, err := exec.LookPath("go")
+	if err != nil {
+		if cfg.Doctor.RequireGo {
+			r.Status = "fail"
+			r.Detail = "go not found in PATH"
+		} else {
+			r.Status = "info"
+			r.Detail = "not installed (not required)"
+		}
+	} else {
+		out, runErr := exec.Command("go", "version").Output()
+		if runErr != nil {
+			r.Status = "pass"
+		} else {
+			r.Status = "pass"
+			r.Detail = strings.TrimSpace(string(out))
+		}
+	}
 	return r
 }
 
@@ -168,7 +209,12 @@ func checkHooks(targetDir string) checkResult {
 				if !ok {
 					continue
 				}
-				if _, err := os.Stat(filepath.Join(targetDir, cmd)); errors.Is(err, fs.ErrNotExist) {
+				fields := strings.Fields(cmd)
+				if len(fields) == 0 {
+					continue
+				}
+				exe := fields[0]
+				if _, err := os.Lstat(filepath.Join(targetDir, exe)); errors.Is(err, fs.ErrNotExist) {
 					missing++
 				}
 			}

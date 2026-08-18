@@ -8,20 +8,16 @@ import (
 	"github.com/thomas0124/ralph/internal/scaffold"
 )
 
-func packRuleRelPath(lang string) string {
-	return filepath.Join(".claude", "rules", lang+".md")
-}
-
-func packVerifyRelPath(lang string) string {
-	return filepath.Join("scripts", "verify-"+lang+".sh")
-}
-
 func packRuleContent(packFS fs.FS) ([]byte, bool, error) {
 	content, err := fs.ReadFile(packFS, "rule.md")
 	if err != nil {
 		return nil, false, nil
 	}
 	return content, true, nil
+}
+
+func packVerifyRelPath(lang string) string {
+	return filepath.Join("packs", "languages", lang, "verify.sh")
 }
 
 func packVerifyContent(packFS fs.FS) ([]byte, bool, error) {
@@ -43,8 +39,19 @@ func renderMappedFile(targetDir, relPath string, content []byte, force bool) (*s
 	hash := scaffold.HashBytes(content)
 
 	abs := filepath.Join(targetDir, relPath)
+	absTargetDir, err := filepath.Abs(targetDir)
+	if err != nil {
+		return nil, "", err
+	}
+	absAbs, err := filepath.Abs(abs)
+	if err != nil {
+		return nil, "", err
+	}
+	if !isInsideDir(absTargetDir, absAbs) {
+		return nil, "", nil
+	}
 
-	_, statErr := os.Stat(abs)
+	_, statErr := os.Lstat(abs)
 	exists := statErr == nil
 
 	if exists && !force {

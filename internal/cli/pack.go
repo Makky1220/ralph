@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -30,7 +32,7 @@ func newPackAddCmd() *cobra.Command {
 		Short: "Add a language pack to the project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPackAdd(".", args[0], force)
+			return addPack(".", args[0], force)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing pack files")
@@ -59,48 +61,52 @@ func newPackListCmd() *cobra.Command {
 	}
 }
 
-func runPackAdd(targetDir, lang string, force bool) error {
-	packFS, err := scaffold.PackFS(lang)
+func addPack(targetDir, lang string, force bool) error {
+	prr, err := renderPackInto(targetDir, lang, force)
 	if err != nil {
-		return fmt.Errorf("loading pack %s: %w", lang, err)
+		return err
 	}
 
-	packDir := filepath.Join(targetDir, "packs", "languages", lang)
-	result, hashes, err := scaffold.RenderFS(packFS, scaffold.RenderOptions{
-		TargetDir: packDir,
-		Overwrite: force,
-		SkipPaths: map[string]bool{"rule.md": true},
-	})
+	printRenderSummary("pack/"+lang, prr.result)
+
+	manifestPath := filepath.Join(targetDir, ".ralph", "manifest.toml")
+	m, err := scaffold.ReadManifest(manifestPath)
 	if err != nil {
-		return fmt.Errorf("rendering pack: %w", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			fmt.Printf("\n  ⚠ No manifest found — run 'ralph init' first to track pack files.\n")
+			return nil
+		}
+		return fmt.Errorf("reading manifest: %w", err)
 	}
 
-	_ = hashes
-	_ = result
-
-	ruleContent, ruleOK, err := packRuleContent(packFS)
-	if err != nil {
-		return fmt.Errorf("reading pack rule: %w", err)
+	if !containsPack(m.Meta.Packs, lang) {
+		m.Meta.Packs = append(m.Meta.Packs, lang)
 	}
-	if ruleOK {
-		rulePath := filepath.Join(targetDir, ".claude", "rules", lang+".md")
-		if _, statErr := os.Stat(rulePath); statErr == nil && !force {
-			fmt.Printf("  ⊘ .claude/rules/%s.md (exists, skipped)\n", lang)
+
+	for path, hash := range prr.hashes {
+		if baselinePath, ok := prr.baselinePaths[path]; ok {
+			m.SetFileWithBaseline(path, hash, baselinePath)
 		} else {
-			if err := os.MkdirAll(filepath.Dir(rulePath), 0755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(rulePath, ruleContent, 0644); err != nil {
-				return err
-			}
-			fmt.Printf("  ✓ .claude/rules/%s.md\n", lang)
+			m.SetFile(path, hash)
 		}
 	}
 
-	created := len(result.Created)
-	overwritten := len(result.Overwritten)
-	skipped := len(result.Skipped)
-	fmt.Printf("\nPack %s: %d files created, %d updated, %d skipped\n", lang, created, overwritten, skipped)
-	fmt.Printf("  Add packs/languages/%s/verify.sh to your verification pipeline.\n", lang)
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
+		return fmt.Errorf("creating .ralph dir: %w", err)
+	}
+	if err := m.Write(manifestPath); err != nil {
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+	fmt.Printf("  ✓ .ralph/manifest.toml (pack %s tracked)\n", lang)
+
 	return nil
+}
+
+func containsPack(packs []string, lang string) bool {
+	for _, p := range packs {
+		if p == lang {
+			return true
+		}
+	}
+	return false
 }
