@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/thomas0124/ralph/internal/config"
@@ -47,6 +48,8 @@ func runDoctor(targetDir string) error {
 	}
 
 	results = append(results, checkClaudeCLI(cfg))
+	results = append(results, checkCodexCLI(cfg))
+	results = append(results, checkCodexEffectiveConfig(targetDir))
 	results = append(results, checkGo(cfg))
 	results = append(results, checkHooks(targetDir))
 	results = append(results, checkManifestVersion(targetDir))
@@ -129,6 +132,102 @@ func checkClaudeCLI(cfg config.Config) checkResult {
 	}
 	r.Status = "pass"
 	r.Detail = version
+	return r
+}
+
+func checkCodexCLI(cfg config.Config) checkResult {
+	r := checkResult{Name: "Codex"}
+	version, err := probeBinary("codex")
+	if err != nil {
+		if cfg.Doctor.RequireCodexCLI {
+			r.Status = "fail"
+			r.Detail = fmt.Sprintf("codex unusable: %v", err)
+		} else {
+			r.Status = "warn"
+			r.Detail = fmt.Sprintf("codex unusable (not required): %v", err)
+		}
+		return r
+	}
+	r.Status = "pass"
+	r.Detail = version
+	return r
+}
+
+// checkCodexEffectiveConfig confirms that .codex/config.toml is present and
+// carries the bits Codex actually loads from a project-level config:
+// [features] hooks = true plus at least one [hooks.<event>] entry.
+// We cannot probe Codex's trust state from Go, so the result stays a warning
+// when the file is structurally fine — the user has to confirm trust via
+// `codex trust .`.
+func checkCodexEffectiveConfig(targetDir string) checkResult {
+	r := checkResult{Name: "Codex effective config"}
+	cfgPath := filepath.Join(targetDir, ".codex", "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		r.Status = "warn"
+		r.Detail = ".codex/config.toml not found"
+		return r
+	}
+	if err != nil {
+		r.Status = "warn"
+		r.Detail = fmt.Sprintf("could not read .codex/config.toml: %v", err)
+		return r
+	}
+
+	var raw map[string]any
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		r.Status = "fail"
+		r.Detail = fmt.Sprintf("invalid .codex/config.toml: %v", err)
+		return r
+	}
+
+	hooksFeatureEnabled := false
+	if features, ok := raw["features"].(map[string]any); ok {
+		if v, ok := features["hooks"].(bool); ok {
+			hooksFeatureEnabled = v
+		}
+	}
+
+	hookEntries := 0
+	hasInlineHooks := false
+	if hooks, ok := raw["hooks"].(map[string]any); ok {
+		hasInlineHooks = true
+		for _, eventHooks := range hooks {
+			switch v := eventHooks.(type) {
+			case []any:
+				hookEntries += len(v)
+			case map[string]any:
+				if len(v) > 0 {
+					hookEntries++
+				}
+			}
+		}
+	}
+
+	hooksJSONPath := filepath.Join(targetDir, ".codex", "hooks.json")
+	if hasInlineHooks {
+		if _, err := os.Stat(hooksJSONPath); err == nil {
+			r.Status = "fail"
+			r.Detail = "both .codex/config.toml [hooks] and .codex/hooks.json exist; remove hooks.json"
+			return r
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			r.Status = "warn"
+			r.Detail = fmt.Sprintf("could not inspect .codex/hooks.json: %v", err)
+			return r
+		}
+	}
+
+	switch {
+	case !hooksFeatureEnabled:
+		r.Status = "warn"
+		r.Detail = "[features] hooks = true is not set; project hooks will be ignored"
+	case hookEntries == 0:
+		r.Status = "warn"
+		r.Detail = "no [hooks.*] entries — run `codex trust .` once configured"
+	default:
+		r.Status = "pass"
+		r.Detail = fmt.Sprintf("hooks=true, %d hook entry(ies). Confirm `codex trust .` ran for this project", hookEntries)
+	}
 	return r
 }
 

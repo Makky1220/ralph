@@ -4,5 +4,7 @@
 [doctor]
 # Fail `ralph doctor` when the claude binary is missing.
 require_claude_cli = true
+# Fail `ralph doctor` when the codex binary is missing (set true if Codex is required).
+require_codex_cli = false
 # Fail `ralph doctor` when go is missing (set true for Go projects).
 require_go = false
