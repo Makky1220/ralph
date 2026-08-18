@@ -322,7 +322,7 @@ func checkHooks(targetDir string) checkResult {
 
 	if missing > 0 {
 		r.Status = "fail"
-		r.Detail = fmt.Sprintf("%d hook script(s) missing on disk", missing)
+		r.Detail = fmt.Sprintf("%d hook script(s) missing", missing)
 	} else {
 		r.Status = "pass"
 	}
@@ -364,9 +364,10 @@ func checkInstalledPacks(targetDir string) []checkResult {
 	for _, p := range m.Meta.Packs {
 		r := checkResult{Name: fmt.Sprintf("Pack: %s", p)}
 		verifyPath := filepath.Join(targetDir, "packs", "languages", p, "verify.sh")
+		relVerify := filepath.Join("packs", "languages", p, "verify.sh")
 		if _, err := os.Stat(verifyPath); errors.Is(err, fs.ErrNotExist) {
 			r.Status = "warn"
-			r.Detail = "verify.sh not found on disk"
+			r.Detail = fmt.Sprintf("%s not found on disk", relVerify)
 		} else {
 			r.Status = "pass"
 		}

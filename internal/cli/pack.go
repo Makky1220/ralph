@@ -1,10 +1,7 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -13,30 +10,26 @@ import (
 )
 
 func newPackCmd() *cobra.Command {
-	pack := &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "pack",
 		Short: "Manage language packs",
 	}
 
-	pack.AddCommand(newPackAddCmd())
-	pack.AddCommand(newPackListCmd())
+	cmd.AddCommand(newPackAddCmd())
+	cmd.AddCommand(newPackListCmd())
 
-	return pack
+	return cmd
 }
 
 func newPackAddCmd() *cobra.Command {
-	var force bool
-
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "add <language>",
 		Short: "Add a language pack to the project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return addPack(".", args[0], force)
+			return addPack(".", args[0])
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing pack files")
-	return cmd
 }
 
 func newPackListCmd() *cobra.Command {
@@ -48,65 +41,82 @@ func newPackListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(packs) == 0 {
-				fmt.Println("No language packs available.")
-				return nil
-			}
 			fmt.Println("Available language packs:")
 			for _, p := range packs {
-				fmt.Printf("  %s\n", p)
+				fmt.Printf("  - %s\n", p)
 			}
 			return nil
 		},
 	}
 }
 
-func addPack(targetDir, lang string, force bool) error {
-	prr, err := renderPackInto(targetDir, lang, force)
+// addPack adds a language pack to an existing project rooted at targetDir.
+// Pack payload files are written to packs/languages/<lang>/ and the rule.md
+// control file is mapped to .claude/rules/ralph/<lang>.md (matching init.go's layout).
+// The shared renderPackInto helper (language_pack.go) is used here so this
+// path cannot diverge from ralph init's pack rendering.
+//
+// A legacy (pre-v2) manifest is rejected fail-closed (zero writes) — see
+// legacyLayoutFailClosedMsg (upgrade.go). The legacy manifest's ownership
+// model was removed alongside the legacy upgrade engine in Phase 3; the
+// automated migration to v2 arrives in a later ralph release (Phase 4).
+func addPack(targetDir string, lang string) error {
+	absDir, err := filepath.Abs(targetDir)
 	if err != nil {
 		return err
 	}
 
-	printRenderSummary("pack/"+lang, prr.result)
-
-	manifestPath := filepath.Join(targetDir, ".ralph", "manifest.toml")
-	m, err := scaffold.ReadManifest(manifestPath)
+	manifestPath := filepath.Join(absDir, ".ralph", "manifest.toml")
+	manifest, err := scaffold.ReadManifest(manifestPath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			fmt.Printf("\n  ⚠ No manifest found — run 'ralph init' first to track pack files.\n")
-			return nil
-		}
 		return fmt.Errorf("reading manifest: %w", err)
 	}
-
-	if !containsPack(m.Meta.Packs, lang) {
-		m.Meta.Packs = append(m.Meta.Packs, lang)
+	if manifest.Meta.Layout != scaffold.LayoutV2 {
+		return errLegacyLayoutFailClosed
 	}
 
-	for path, hash := range prr.hashes {
-		if baselinePath, ok := prr.baselinePaths[path]; ok {
-			m.SetFileWithBaseline(path, hash, baselinePath)
-		} else {
-			m.SetFile(path, hash)
+	// renderPackInto handles directory layout and rule.md mapping — identical
+	// to what executeInit does for each pack.
+	pr, err := renderPackInto(absDir, lang, true /* overwrite existing files */)
+	if err != nil {
+		return err
+	}
+
+	// Update manifest: merge pack entries and write back. Every reachable
+	// manifest here is v2 (the fail-closed check above rejects anything
+	// else), so ownership is always assigned — classification is shared with
+	// ralph init via ownerForScaffoldPath (init.go) rather than mirrored, so
+	// the two entry points cannot diverge on a future pack payload path (e.g.
+	// under docs/ or .ralph/local/).
+	for path, hash := range pr.hashes {
+		manifest.SetFile(path, hash)
+		if err := manifest.SetOwner(path, ownerForScaffoldPath(path)); err != nil {
+			// SetOwner only fails for an invalid owner (impossible —
+			// ownerForScaffoldPath always returns a valid constant) or a
+			// manifest entry missing for path (impossible here — SetFile was
+			// just called for every key in pr.hashes). Kept as a defensive
+			// guard, matching the surrounding ReadManifest/Write style.
+			fmt.Printf("⚠ Could not set owner for %s: %v\n", path, err)
 		}
 	}
+	// Record the pack in Meta.Packs if not already present.
+	alreadyListed := false
+	for _, p := range manifest.Meta.Packs {
+		if p == lang {
+			alreadyListed = true
+			break
+		}
+	}
+	if !alreadyListed {
+		manifest.Meta.Packs = append(manifest.Meta.Packs, lang)
+	}
+	if err := manifest.Write(manifestPath); err != nil {
+		fmt.Printf("⚠ Could not write manifest: %v\n", err)
+	}
 
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0755); err != nil {
-		return fmt.Errorf("creating .ralph dir: %w", err)
-	}
-	if err := m.Write(manifestPath); err != nil {
-		return fmt.Errorf("writing manifest: %w", err)
-	}
-	fmt.Printf("  ✓ .ralph/manifest.toml (pack %s tracked)\n", lang)
+	created := len(pr.result.Created)
+	updated := len(pr.result.Overwritten)
+	fmt.Printf("✓ Pack %s added (%d created, %d updated)\n", lang, created, updated)
 
 	return nil
-}
-
-func containsPack(packs []string, lang string) bool {
-	for _, p := range packs {
-		if p == lang {
-			return true
-		}
-	}
-	return false
 }

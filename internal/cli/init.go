@@ -436,34 +436,3 @@ func printRenderSummary(label string, result *scaffold.RenderResult) {
 	fmt.Printf("  ✓ %s (%d files: %d created, %d updated, %d skipped)\n",
 		label, total, created, overwritten, skipped)
 }
-
-// writeRenderedBaselines writes baseline files for every path that was
-// actually written (created or overwritten) during a scaffold.RenderFS call.
-// prefix is prepended to each path to form the manifest key (used when
-// rendering pack files into a subdirectory).
-//
-// This function is kept here to support language_pack.go's renderPackInto,
-// which tracks baselines so the upgrade engine can diff pack files later.
-func writeRenderedBaselines(targetDir string, src fs.FS, prefix string, result *scaffold.RenderResult) (map[string]string, error) {
-	out := make(map[string]string)
-	written := make(map[string]bool, len(result.Created)+len(result.Overwritten))
-	for _, path := range result.Created {
-		written[path] = true
-	}
-	for _, path := range result.Overwritten {
-		written[path] = true
-	}
-	for path := range written {
-		content, err := fs.ReadFile(src, path)
-		if err != nil {
-			return nil, fmt.Errorf("reading baseline source %s: %w", path, err)
-		}
-		manifestPath := filepath.Join(prefix, path)
-		baselinePath, err := scaffold.WriteBaseline(targetDir, manifestPath, content)
-		if err != nil {
-			return nil, err
-		}
-		out[manifestPath] = baselinePath
-	}
-	return out, nil
-}
