@@ -131,9 +131,11 @@ func TestTemplateBaseCodexAssetsExist(t *testing.T) {
 	}
 }
 
-// TestTemplateBaseRalphTomlParseable verifies the shipped ralph.toml parses
-// cleanly and contains the expected [doctor] section.
-func TestTemplateBaseRalphTomlParseable(t *testing.T) {
+// TestTemplateBaseRalphTomlHasOrgSection enforces that scaffolded projects
+// receive the [org] envelope config out of the box. The [loop]/[pipeline]
+// sections this test used to also check were removed along with the Ralph
+// Loop execution system.
+func TestTemplateBaseRalphTomlHasOrgSection(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot determine test file location")
@@ -147,9 +149,8 @@ func TestTemplateBaseRalphTomlParseable(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		"[doctor]",
-		"require_claude_cli",
-		"require_codex_cli",
+		"[org]",
+		`driver_pool = ["claude", "codex"]`,
 	} {
 		if !contains(body, want) {
 			t.Errorf("templates/base/ralph.toml missing %q", want)

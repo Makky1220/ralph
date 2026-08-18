@@ -69,6 +69,8 @@ go install github.com/thomas0124/ralph/cmd/ralph@latest
 | `ralph doctor` | ハーネスの整合性チェック |
 | `ralph pack add <lang>` | 言語パックを追加 |
 | `ralph insights` | パイプライン実行データを集計・表示 |
+| `ralph org <verb>` | 自律マルチシート org ランタイム（後述） |
+| `ralph status` | アクティブシートの状態一覧 |
 | `ralph version` | バージョン確認 |
 
 ---
@@ -212,22 +214,29 @@ ralph upgrade
 
 ```sh
 ralph doctor
+ralph doctor --probe-models   # org ランタイムのモデル疎通確認まで実施
 ```
 
 | チェック項目 | 説明 |
 |-------------|------|
 | Claude CLI | `require_claude_cli` で必須／警告を切り替え |
+| Codex CLI | `require_codex_cli` で必須チェックを有効化 |
 | Go | `require_go` で必須チェックを有効化 |
 | settings.json | フック設定の整合性 |
 | フックスクリプト | 実行可能ビットの確認 |
 | マニフェスト | バージョン・ハッシュの整合性 |
 | 言語パック | verify.sh の存在と実行可能ビット |
+| herdr | ターミナルペイン管理ツール（org ランタイム用） |
+| agmsg | シート間メッセージングスクリプト群 |
+| org envelope | herdr + agmsg の疎通確認 |
+| model probes | `--probe-models` 時：各ドライバーのモデル疎通確認 |
 
 `ralph.toml` で動作を調整できる：
 
 ```toml
 [doctor]
 require_claude_cli = true   # false にすると警告のみ
+require_codex_cli  = false  # true にすると codex 必須チェックを有効化
 require_go         = false  # true にすると go 必須チェックを有効化
 ```
 
@@ -246,6 +255,82 @@ ralph insights backfill     # docs/reports/ から過去データを生成
 - フェーズ別テーブル（phase / events / verdicts / findings / triage）
 - エスカレーション（cycle >= 2 に達したスラッグの比較）
 - ルーティング統計（honored rate per phase）
+
+---
+
+## org ランタイム — 自律マルチシート実行
+
+**herdr**（ターミナルペイン管理）と **agmsg**（型付きメッセージング）を組み合わせて、複数の AI シートを並列に動かす仕組みです。Claude Code と Codex を混在させることができます。
+
+### 前提ツール
+
+| ツール | インストール |
+|--------|-------------|
+| [herdr](https://herdr.dev) | `brew install herdr` |
+| [agmsg](https://github.com/fujibee/agmsg) | `git clone https://github.com/fujibee/agmsg ~/.agents/skills/agmsg` |
+
+```sh
+ralph doctor   # herdr / agmsg の疎通確認
+```
+
+### トポロジー
+
+```
+lead (Claude Code)
+  ├── seat: implementer  (driver: claude / codex)
+  ├── seat: reviewer     (driver: claude)
+  └── seat: tester       (driver: codex)
+```
+
+lead がタスクを各シートに送り、RESULT を受け取って調整します。シートは herdr がターミナルペインとして起動し、シート間のメッセージは agmsg の TASK / RESULT / BLOCKED / REVIEW / QUESTION 形式でやり取りされます。
+
+### org コマンド
+
+```sh
+ralph org spawn --driver claude --seat reviewer   # Claude Code シートを起動
+ralph org spawn --driver codex  --seat verifier   # Codex シートを起動
+ralph org send  --seat reviewer "TYPE: TASK\n..."  # タスク送信
+ralph org wait  --seat reviewer                    # 完了待機
+ralph org read  --seat reviewer                    # 最新メッセージ取得
+ralph org stop  --seat reviewer                    # シート停止
+ralph org disband                                  # 全シート停止
+ralph status                                       # アクティブシート一覧
+```
+
+### `ralph.toml` org 設定
+
+```toml
+[org]
+driver_pool      = ["claude", "codex"]
+model_pool       = [
+  { driver = "claude", model = "opus" },    # 判断・レビュー系
+  { driver = "claude", model = "sonnet" },  # 実装系
+  { driver = "codex",  model = "gpt-5.5" }, # 検証系
+]
+max_seats        = 5
+deadman_minutes  = 10
+agmsg_home       = "~/.agents/skills/agmsg"
+
+[org.permissions]
+default          = "default"
+codex_verified   = false   # true: codex に広い権限を付与
+
+[org.budget]
+seat_wall_clock_minutes  = 30
+total_wall_clock_minutes = 120
+max_fix_rounds           = 3
+```
+
+### Claude Code + Codex 橋渡し
+
+`/cross-review` スキルで、一方が実装してもう一方がレビューする非同期ワークフローが使えます：
+
+```
+Claude が実装 → Codex がレビュー
+Codex が実装  → Claude がレビュー
+```
+
+org ランタイムなしでも `/cross-review` 単体で動作します。
 
 ---
 
