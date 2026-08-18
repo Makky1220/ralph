@@ -87,6 +87,26 @@ func shouldColorize(out *os.File) bool {
 	return term.IsTerminal(out.Fd())
 }
 
+func validatePagerMode(mode string) error {
+	switch mode {
+	case pagerAuto, pagerAlways, pagerNever:
+		return nil
+	default:
+		return fmt.Errorf("invalid --pager %q (want auto, always, or never)", mode)
+	}
+}
+
+func writeDiffOutput(diff string, out, errOut io.Writer, pagerMode string) {
+	if !shouldUsePager(pagerMode, out) {
+		_, _ = io.WriteString(out, diff)
+		return
+	}
+	if err := writeThroughPager(diff, out, errOut); err != nil {
+		writef(errOut, "    (pager failed: %v — writing diff directly)\n", err)
+		_, _ = io.WriteString(out, diff)
+	}
+}
+
 func runUpgradeIOWithOptions(targetDir string, opts upgradeOptions, in io.Reader, out, errOut io.Writer, colorize bool) error {
 	if opts.Pager == "" {
 		opts.Pager = pagerAuto
@@ -589,6 +609,3 @@ func writeThroughPager(diff string, out, errOut io.Writer) error {
 	return cmd.Run()
 }
 
-// keep shouldUsePager and writeThroughPager in scope
-var _ = shouldUsePager
-var _ = writeThroughPager

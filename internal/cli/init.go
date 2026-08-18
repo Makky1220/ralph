@@ -3,15 +3,18 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/thomas0124/ralph/internal/scaffold"
+	"github.com/thomas0124/ralph/internal/upgrade"
 )
 
 func newInitCmd() *cobra.Command {
@@ -234,4 +237,131 @@ func printRenderSummary(label string, result *scaffold.RenderResult) {
 	total := created + overwritten + skipped
 	fmt.Printf("  ✓ %s (%d files: %d created, %d updated, %d skipped)\n",
 		label, total, created, overwritten, skipped)
+}
+
+// ownerForScaffoldPath returns the manifest v3 ownership attribute for a
+// scaffolded file, keyed by its manifest-relative path.
+func ownerForScaffoldPath(relPath string) string {
+	relPath = filepath.ToSlash(relPath)
+	switch relPath {
+	case "AGENTS.md", ".gitignore":
+		return scaffold.OwnerBlock
+	case "CLAUDE.md", "ralph.toml", ".github/workflows/verify.yml", ".codex/AGENTS.override.md":
+		return scaffold.OwnerSeed
+	}
+	if strings.HasPrefix(relPath, "docs/") {
+		return scaffold.OwnerSeed
+	}
+	if strings.HasPrefix(relPath, ".ralph/local/") {
+		return scaffold.OwnerSeed
+	}
+	return scaffold.OwnerCore
+}
+
+// blockSurface pairs a block-owned manifest path with the ralph surface
+// token and marker style used to locate its managed block.
+type blockSurface struct {
+	path    string
+	surface string
+	style   upgrade.BlockMarkerStyle
+}
+
+// blockSurfaces lists every file whose ownership attribute is "block":
+// files that are user-owned outside a single ralph-managed marker pair.
+var blockSurfaces = []blockSurface{
+	{path: "AGENTS.md", surface: "agents-md", style: upgrade.BlockMarkerHTML},
+	{path: ".gitignore", surface: "gitignore", style: upgrade.BlockMarkerHash},
+}
+
+// reconcileBlockSurfaces appends the ralph managed block into pre-existing
+// AGENTS.md / .gitignore files that RenderFS skipped because they already
+// existed.
+func reconcileBlockSurfaces(targetDir string, baseFS fs.FS, skipped []string, w io.Writer) (map[string]string, error) {
+	skippedSet := make(map[string]bool, len(skipped))
+	for _, p := range skipped {
+		skippedSet[p] = true
+	}
+
+	diskHashes := make(map[string]string)
+	for _, bs := range blockSurfaces {
+		if !skippedSet[bs.path] {
+			continue
+		}
+
+		templateContent, err := fs.ReadFile(baseFS, bs.path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("reading template %s: %w", bs.path, err)
+		}
+		interior, err := extractBlockInterior(templateContent, bs.surface, bs.style)
+		if err != nil {
+			return nil, fmt.Errorf("extracting managed block from template %s: %w", bs.path, err)
+		}
+
+		diskPath := filepath.Join(targetDir, bs.path)
+
+		info, err := os.Lstat(diskPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading existing %s: %w", bs.path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			writef(w, "  ⚠ %s: is a symlink; left untouched\n", bs.path)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			writef(w, "  ⚠ %s: is not a regular file; left untouched\n", bs.path)
+			continue
+		}
+
+		current, err := os.ReadFile(diskPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading existing %s: %w", bs.path, err)
+		}
+
+		result := upgrade.UpdateManagedBlockStyled(current, bs.surface, interior, bs.style)
+		switch result.Outcome {
+		case upgrade.BlockAppended:
+			if err := os.WriteFile(diskPath, result.Content, scaffold.FilePerm(bs.path)); err != nil {
+				return nil, fmt.Errorf("writing %s: %w", bs.path, err)
+			}
+			diskHashes[bs.path] = scaffold.HashBytes(result.Content)
+			writef(w, "  ✓ %s (appended ralph managed block)\n", bs.path)
+		case upgrade.BlockMalformed:
+			writef(w, "  ⚠ %s: existing ralph managed block is malformed (%s); left untouched\n", bs.path, result.Reason)
+		default:
+			// BlockUpdated / BlockUnchanged: a well-formed block already
+			// exists on disk. Init only appends when a block is absent.
+		}
+	}
+	return diskHashes, nil
+}
+
+// extractBlockInterior returns the bytes strictly between the BEGIN and END
+// marker lines of a rendered template's managed block.
+func extractBlockInterior(templateContent []byte, surface string, style upgrade.BlockMarkerStyle) ([]byte, error) {
+	begin := upgrade.BeginMarkerStyled(surface, style)
+	end := upgrade.EndMarkerStyled(style)
+
+	lines := strings.Split(string(templateContent), "\n")
+	beginIdx, endIdx := -1, -1
+	for i, l := range lines {
+		trimmed := strings.TrimSuffix(l, "\r")
+		if trimmed == begin && beginIdx == -1 {
+			beginIdx = i
+		}
+		if trimmed == end && beginIdx != -1 && endIdx == -1 {
+			endIdx = i
+		}
+	}
+	if beginIdx == -1 || endIdx == -1 {
+		return nil, fmt.Errorf("template block markers not found for surface %q", surface)
+	}
+
+	interior := lines[beginIdx+1 : endIdx]
+	if len(interior) == 0 {
+		return nil, nil
+	}
+	return []byte(strings.Join(interior, "\n") + "\n"), nil
 }

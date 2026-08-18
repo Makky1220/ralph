@@ -88,6 +88,16 @@ func packRelDir(pack string) string {
 	return filepath.Join("packs", "languages", pack)
 }
 
+// packNamespacePrefix is the root namespace for all language pack entries in
+// the manifest. Keys under this prefix are pack-scoped.
+const packNamespacePrefix = "packs/languages/"
+
+// packPrefixFor returns the namespace prefix used for a specific pack's files
+// in the project manifest (e.g. "packs/languages/golang/").
+func packPrefixFor(pack string) string {
+	return packNamespacePrefix + pack + "/"
+}
+
 // packRuleRelPath returns the manifest key for a pack's rule file.
 // Uses path.Join (not filepath.Join) because manifest keys use slash separators.
 func packRuleRelPath(pack string) string {

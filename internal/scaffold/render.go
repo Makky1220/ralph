@@ -61,7 +61,7 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 		hash := HashBytes(content)
 		hashes[path] = hash
 
-		if _, statErr := os.Stat(target); statErr == nil {
+		if _, statErr := os.Lstat(target); statErr == nil {
 			if !opts.Overwrite {
 				result.Skipped = append(result.Skipped, path)
 				return nil
@@ -75,18 +75,29 @@ func RenderFS(src fs.FS, opts RenderOptions) (*RenderResult, map[string]string, 
 			return fmt.Errorf("creating parent dir for %s: %w", path, err)
 		}
 
-		return os.WriteFile(target, content, FilePerm(path))
+		perm := filePerm(path)
+
+		return os.WriteFile(target, content, perm)
 	})
 
 	return result, hashes, err
 }
 
+// FilePerm returns the appropriate file permission for the given path.
+// Shell scripts (.sh suffix) and the extensionless "ralph" script in
+// scripts/ get 0755; all others get 0644.
 func FilePerm(path string) fs.FileMode {
 	if strings.HasSuffix(path, ".sh") {
 		return 0755
 	}
+	if filepath.Base(path) == "ralph" && strings.Contains(path, "scripts/") {
+		return 0755
+	}
 	return 0644
 }
+
+// filePerm is an unexported alias for internal use in this package.
+func filePerm(path string) fs.FileMode { return FilePerm(path) }
 
 func HashBytes(data []byte) string {
 	h := sha256.Sum256(data)
