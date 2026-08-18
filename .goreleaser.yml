@@ -71,7 +71,7 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/thomas0124/ralph"
-    description: "CLI tool to bootstrap and manage Claude Code harness configuration for your projects"
+    description: "Harness engineering & multi-agent org runtime CLI for Claude Code / Codex projects"
     license: "MIT"
     install: |
       bin.install "ralph"
