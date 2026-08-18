@@ -2,9 +2,9 @@
 
 # ralph
 
-**Claude Code プロジェクト向けハーネスエンジニアリング CLI**
+**Claude Code / Codex プロジェクト向けハーネス & マルチエージェント CLI**
 
-`ralph init` 一発で、検証済みのフック・スキル・エージェント・パイプライン設定をプロジェクトに展開する。
+`ralph init` 一発でハーネスを展開。`ralph org` で Claude Code と Codex を並列シートとして動かす。
 
 [![Release](https://img.shields.io/github/v/release/thomas0124/ralph?style=flat-square&color=blue)](https://github.com/thomas0124/ralph/releases)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go)](https://go.dev)
