@@ -92,6 +92,10 @@ KNOWN_DIFFS=(
   # model-routing.md: root documents the Go-layer default (internal/config)
   # which does not exist in scaffolded projects
   ".claude/rules/ralph/model-routing.md"
+  # settings.json: root has Go-project permissions only; template has full hook config
+  ".claude/settings.json"
+  # .gitignore: root excludes Go build artifacts; template targets scaffolded projects
+  ".gitignore"
 )
 
 # AGENTS.md is block-aware, not whole-file compared (see check_agents_md_block
@@ -203,6 +207,10 @@ if [ ! -f "$agents_core_src" ]; then
 else
   for agents_file in "AGENTS.md" "templates/base/AGENTS.md"; do
     if [ ! -f "$agents_file" ]; then
+      if [ "$agents_file" = "AGENTS.md" ]; then
+        echo "  SKIP           AGENTS.md (not present at root — self-dogfooding optional)"
+        continue
+      fi
       root_only=$((root_only + 1))
       echo "  ROOT_ONLY      $agents_file (file missing)"
       errors+=("ROOT_ONLY: $agents_file (missing)")
