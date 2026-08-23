@@ -1,3 +1,5 @@
+<img width="1680" height="640" alt="image" src="https://github.com/user-attachments/assets/ade748ff-3f3b-4670-9bf9-d0c08e5f61a8" />
+
 <div align="center">
 
 # ralph
