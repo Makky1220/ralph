@@ -2,11 +2,10 @@
 
 <div align="center">
 
-# ralph
+# >_ ralph
 
-**Claude Code / Codex プロジェクト向けハーネス & マルチエージェント CLI**
-
-`ralph init` 一発でハーネスを展開。`ralph org` で Claude Code と Codex を並列シートとして動かす。
+<p><strong>AI agents, orchestrated. Development, accelerated.</strong></p>
+<p>A multi-agent CLI harness for Claude Code & Codex projects.</p>
 
 [![Release](https://img.shields.io/github/v/release/thomas0124/ralph?style=flat-square&color=blue)](https://github.com/thomas0124/ralph/releases)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go)](https://go.dev)
@@ -18,25 +17,34 @@
 
 ---
 
-## クイックスタート
+## 🛠️ Quick Start
+
+Initialize the AI development harness in your current project:
 
 ```sh
-brew install thomas0124/tap/ralph
+$ ralph init
+✓ Initializing AI development harness
+✓ Setting up agents and workflows
+✓ Ready to build.
 ```
+
+Start the orchestration terminal (`herdr`):
 
 ```sh
-cd your-project
-ralph init
+$ ralph status
 ```
 
-それだけ。あとは Claude Code を開いて `/spec` から始める。
+Explore more commands:
+- `ralph migrate`: Run workspace migrations.
+- `ralph upgrade`: Upgrade agent templates and configurations.
+- `ralph pack`: Manage language packs.
 
 ---
 
-## インストール
+## 📦 Installation
 
 <details>
-<summary><strong>Homebrew（推奨）</strong></summary>
+<summary><strong>Homebrew（Recomended）</strong></summary>
 
 ```sh
 brew install thomas0124/tap/ralph
@@ -47,6 +55,8 @@ brew install thomas0124/tap/ralph
 <details>
 <summary><strong>Go install</strong></summary>
 
+Make sure Go is installed, then install the latest version:
+
 ```sh
 go install github.com/thomas0124/ralph/cmd/ralph@latest
 ```
@@ -54,119 +64,62 @@ go install github.com/thomas0124/ralph/cmd/ralph@latest
 </details>
 
 <details>
-<summary><strong>バイナリ直接ダウンロード</strong></summary>
+<summary><strong>Pre-compiled binaries</strong></summary>
 
-[Releases](https://github.com/thomas0124/ralph/releases) から OS/アーキテクチャに合ったバイナリをダウンロードして PATH に置く。
+- You can download the pre-compiled binaries from the [Releases](https://github.com/thomas0124/ralph/releases/) page.
 
 </details>
 
 ---
 
-## コマンド一覧
+## Command Reference
 
-| コマンド | 説明 |
+| Command | Description |
 |---------|------|
-| `ralph init` | ハーネスをプロジェクトにセットアップ |
-| `ralph upgrade` | 最新テンプレートに更新（3-way マージ） |
-| `ralph doctor` | ハーネスの整合性チェック |
-| `ralph pack add <lang>` | 言語パックを追加 |
-| `ralph insights` | パイプライン実行データを集計・表示 |
-| `ralph org <verb>` | 自律マルチシート org ランタイム（後述） |
-| `ralph status` | アクティブシートの状態一覧 |
-| `ralph version` | バージョン確認 |
+| `ralph init` | Set up the harness in a project |
+| `ralph upgrade` | Upgrade to the latest templates using a three-way merge |
+| `ralph doctor` | Upgrade to the latest templates using a three-way merge |
+| `ralph pack add <lang>` | Add a language pack |
+| `ralph insights` | Aggregate and display pipeline execution data |
+| `ralph org <verb>` | Run the autonomous multi-seat org runtime |
+| `ralph status` | Show active seats |
+| `ralph version` | Print the installed version |
 
 ---
 
-## `ralph init` — 何が展開されるか
+## Operating Loop
 
 ```
-your-project/
-├── CLAUDE.md                          ← 常時参照ガイド
-├── AGENTS.md                          ← エージェント向けプロジェクト定義
-├── ralph.toml                         ← プロジェクト設定
-│
-├── .claude/
-│   ├── settings.json                  ← 権限 + フック設定（dispatch 方式）
-│   ├── hooks/
-│   │   ├── ralph-dispatch.sh          ← 全フックの単一エントリポイント
-│   │   ├── pre_bash_guard.sh          ← 危険な Bash コマンドをブロック
-│   │   ├── post_edit_verify.sh        ← 編集後の自動検証
-│   │   ├── check_mojibake.sh          ← U+FFFD 文字化け検出
-│   │   ├── prompt_gate.sh             ← プロンプトごとの計画リフレッシュ促進
-│   │   ├── session_start_context.sh   ← セッション開始時コンテキスト読み込み
-│   │   ├── session_end_summary.sh     ← セッション終了時サマリ
-│   │   ├── precompact_checkpoint.sh   ← コンパクト前チェックポイント
-│   │   ├── PostToolUse.d/             ← イベント別 dispatch ディレクトリ
-│   │   ├── PreToolUse.d/
-│   │   └── ...
-│   ├── skills/                        ← 11 スキル（後述）
-│   ├── agents/                        ← 5 エージェント（後述）
-│   └── rules/ralph/                   ← 10 ルール（後述）
-│
-├── .ralph/
-│   ├── core/settings.ralph.json       ← ralph 管理の settings スナップショット
-│   └── local/                         ← ユーザー拡張ポイント
-│
-├── scripts/                           ← 27 本のユーティリティスクリプト
-│   ├── run-verify.sh / run-test.sh
-│   ├── secret-scan.sh
-│   ├── insights-append.sh
-│   └── ...
-│
-├── docs/
-│   ├── plans/active|archive/          ← 実装計画
-│   ├── specs/  reports/               ← 仕様書・レポート
-│   ├── insights/events/               ← パイプライン実行イベント（JSONL）
-│   ├── recipes/  quality/
-│   └── architecture/  research/  roadmap/
-│
-└── .github/workflows/verify.yml       ← CI ワークフロー
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                      │
+│   /spec  ──▶  /plan  ──▶  /work                                                      │
+│                               │                                                      │
+│                               ▼                                                      │
+│              /self-review ──▶ /verify ──▶ /test                                      │
+│                                               │                                      │
+│                                               ▼                                      │
+│                                               /sync-docs ──▶ /cross-review ──▶ /pr   │
+│                                                                （optional)　　　　　　  |
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Git フック自動インストール**（git リポジトリの場合）
->
-> | フック | 機能 |
-> |--------|------|
-> | `pre-commit` | ステージされたシークレットをブロック（AWS・GitHub・OpenAI 等） |
-> | `commit-msg` | シークレットスキャン + Conventional Commits 検証 |
-> | `pre-merge-commit` | マージ時のシークレットスキャン |
-> | `prepare-commit-msg` | コミットメッセージ準備時のシークレットスキャン |
+ After `/work`, the post-pipeline can be executed automatically by sub-agents.
 
----
-
-## オペレーティングループ
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                   │
-│   /spec  ──▶  /plan  ──▶  /work                                  │
-│                               │                                   │
-│                               ▼                                   │
-│              /self-review ──▶ /verify ──▶ /test                  │
-│                                               │                   │
-│                                               ▼                   │
-│                          /sync-docs ──▶ /cross-review ──▶ /pr    │
-│                                         （任意）                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-ポストパイプラインはサブエージェントが自動実行する。`/work` を呼べば後は流れる。
-
-| スキル | 役割 |
+| Skill | Purpose |
 |--------|------|
-| `/spec` | 要件の明確化（インタラクティブ、決定木形式） |
-| `/plan` | クリーンベース worktree 作成 + 実装計画策定 |
-| `/work` | スライス実装 → コミット → ポストパイプライン起動 |
-| `/self-review` | diff 品質チェック（実装直後） |
-| `/verify` | 仕様適合性 + 静的解析 |
-| `/test` | 振る舞いテスト |
-| `/sync-docs` | ドキュメント同期 |
-| `/cross-review` | クロスモデルのセカンドオピニオン（任意） |
-| `/pr` | PR 作成 + worktree クリーンアップ |
+| `/spec` | Clarify requirements interactively using a decision-tree workflow |
+| `/plan` | Create a clean-base worktree and produce an implementation plan |
+| `/work` | Implement a slice, commit it, and trigger the post-pipeline |
+| `/self-review` | Check diff quality immediately after implementation |
+| `/verify` | Check specification compliance and run static analysis |
+| `/test` | Run behavioral tests |
+| `/sync-docs` | Synchronize documentation |
+| `/cross-review` | Request a cross-model second opinion (optional) |
+| `/pr` | Create a pull request and clean up the worktree |
 
 ---
 
-## 言語パック
+## Language Packs
 
 ```sh
 ralph pack add typescript   # tsc + eslint
@@ -174,108 +127,93 @@ ralph pack add python       # mypy + ruff + pytest
 ralph pack add golang       # go vet + staticcheck + golangci-lint
 ralph pack add rust         # cargo check + clippy + fmt
 ralph pack add dart         # dart analyze + flutter/pure-dart test
-ralph pack add terraform    # terraform validate + tflint (tofu 優先)
+ralph pack add terraform    # terraform validate + tflint (tofu preferred)
 ```
 
-パックが展開するファイル：
+Each pack expands to:
 
 ```
 packs/languages/<lang>/
-├── verify.sh          ← POSIX sh 検証スクリプト
-├── rule.md            ← 言語ルール定義
+├── verify.sh          ← POSIX sh verification script
+├── rule.md            ← Language-specific rules
 └── README.md
-.claude/rules/ralph/<lang>.md   ← Claude Code に読み込まれるルール
+.claude/rules/ralph/<lang>.md   ← Rules loaded by Claude Code
 ```
 
-`verify.sh` は 2 つの環境変数で制御できる：
+`verify.sh` can be controlled with:
 
-| 変数 | 説明 |
+| Variable | Description |
 |------|------|
-| `HARNESS_VERIFY_MODE` | `static` / `test` / `all`（デフォルト: `all`） |
-| `RALPH_VERIFY_PROJECT_ROOTS` | モノレポで検証対象ルートを限定（スペース区切り） |
+| `HARNESS_VERIFY_MODE` | `static` / `test` / `all`（default: `all`） |
+| `RALPH_VERIFY_PROJECT_ROOTS` | Space-separated project roots to verify in a monorepo |
 
 ---
 
-## `ralph upgrade` — スマートアップグレード
-
-```sh
-ralph upgrade
-```
-
-| 機能 | 説明 |
-|------|------|
-| **3-way マージ** | `settings.json` の ralph 管理領域を安全に更新しながらユーザー設定を保持 |
-| **managed block** | `AGENTS.md`・`.gitignore` の `BEGIN/END RALPH MANAGED` ブロックのみ更新 |
-| **drift 検出** | ローカル変更を上書きせず記録 |
-| **色付き diff** | 変更内容をターミナルに表示 |
-| **アップグレードレポート** | `docs/reports/` に自動生成 |
-
----
-
-## `ralph doctor` — ヘルスチェック
+## `ralph doctor` — Health Checks
 
 ```sh
 ralph doctor
-ralph doctor --probe-models   # org ランタイムのモデル疎通確認まで実施
+# Also probe model connectivity for the org runtime:
+ralph doctor --probe-models
 ```
 
-| チェック項目 | 説明 |
+| Check | Description |
 |-------------|------|
-| Claude CLI | `require_claude_cli` で必須／警告を切り替え |
-| Codex CLI | `require_codex_cli` で必須チェックを有効化 |
-| Go | `require_go` で必須チェックを有効化 |
-| settings.json | フック設定の整合性 |
-| フックスクリプト | 実行可能ビットの確認 |
-| マニフェスト | バージョン・ハッシュの整合性 |
-| 言語パック | verify.sh の存在と実行可能ビット |
-| herdr | ターミナルペイン管理ツール（org ランタイム用） |
-| agmsg | シート間メッセージングスクリプト群 |
-| org envelope | herdr + agmsg の疎通確認 |
-| model probes | `--probe-models` 時：各ドライバーのモデル疎通確認 |
+| Claude CLI | Required/warn-only behavior controlled by `require_claude_cli` |
+| Codex CLI | Required when `require_codex_cli = true` |
+| Go | Required when `require_go = true` |
+| settings.json | Validates hook configuration |
+| Hook scripts | Checks executable bits |
+| Manifest | Validates version and hash consistency |
+| Language packs | Checks `verify.sh` exists and is executable |
+| herdr | Terminal pane manager required by the org runtime |
+| agmsg | Seat-to-seat messaging scripts |
+| org envelope | Connectivity checks for herdr + agmsg |
+| model probes | With `--probe-models` , checks connectivity for each model driver |
 
-`ralph.toml` で動作を調整できる：
+Configure these requirements in `ralph.toml` :
 
 ```toml
 [doctor]
-require_claude_cli = true   # false にすると警告のみ
-require_codex_cli  = false  # true にすると codex 必須チェックを有効化
-require_go         = false  # true にすると go 必須チェックを有効化
+require_claude_cli = true   # false: warn only
+require_codex_cli  = false  # true: require Codex CLI
+require_go         = false  # true: require Go
 ```
 
 ---
 
-## `ralph insights` — パイプライン分析
+## `ralph insights` — Pipeline Analytics
 
 ```sh
-ralph insights              # イベント集計を表示
-ralph insights --json       # JSON 出力
-ralph insights backfill     # docs/reports/ から過去データを生成
+ralph insights              # Display aggregated events
+ralph insights --json       # Output JSON
+ralph insights backfill     # Generate historical data from docs/reports/
 ```
 
-`docs/insights/events/` の JSONL ファイルを集計して表示する：
+`ralph insights` aggregates the JSONL events stored under `docs/insights/events/` and reports:
 
-- フェーズ別テーブル（phase / events / verdicts / findings / triage）
-- エスカレーション（cycle >= 2 に達したスラッグの比較）
-- ルーティング統計（honored rate per phase）
+- Phase-level metrics (`phase` / `events` / `verdicts` / `findings` / `triage`)
+- Escalation comparisons for slugs reaching `cycle >= 2`
+- Routing statistics, including honored rate per phase
 
 ---
 
-## org ランタイム — 自律マルチシート実行
+## Org Runtime — Autonomous Multi-Seat Execution
 
-**herdr**（ターミナルペイン管理）と **agmsg**（型付きメッセージング）を組み合わせて、複数の AI シートを並列に動かす仕組みです。Claude Code と Codex を混在させることができます。
+The `org` runtime combines **herdr** (terminal pane management) and **agmsg** (typed messaging) to run multiple AI seats in parallel. Claude Code and Codex can be mixed in the same runtime.
 
-### 前提ツール
+### Prerequisites
 
-| ツール | インストール |
+| Tool | Installation |
 |--------|-------------|
 | [herdr](https://herdr.dev) | `brew install herdr` |
 | [agmsg](https://github.com/fujibee/agmsg) | `git clone https://github.com/fujibee/agmsg ~/.agents/skills/agmsg` |
 
 ```sh
-ralph doctor   # herdr / agmsg の疎通確認
+ralph doctor
 ```
 
-### トポロジー
+### Topology
 
 ```
 lead (Claude Code)
@@ -284,30 +222,30 @@ lead (Claude Code)
   └── seat: tester       (driver: codex)
 ```
 
-lead がタスクを各シートに送り、RESULT を受け取って調整します。シートは herdr がターミナルペインとして起動し、シート間のメッセージは agmsg の TASK / RESULT / BLOCKED / REVIEW / QUESTION 形式でやり取りされます。
+The lead seat dispatches tasks to individual seats and coordinates their RESULT messages. Seats are launched as terminal panes by `herdr` ; seat-to-seat communication uses agmsg message types such as `TASK` , `RESULT` , `BLOCKED` , `REVIEW` , and `QUESTION` .
 
-### org コマンド
+### `ralph org`  Commands
 
 ```sh
-ralph org spawn --driver claude --seat reviewer   # Claude Code シートを起動
-ralph org spawn --driver codex  --seat verifier   # Codex シートを起動
-ralph org send  --seat reviewer "TYPE: TASK\n..."  # タスク送信
-ralph org wait  --seat reviewer                    # 完了待機
-ralph org read  --seat reviewer                    # 最新メッセージ取得
-ralph org stop  --seat reviewer                    # シート停止
-ralph org disband                                  # 全シート停止
-ralph status                                       # アクティブシート一覧
+ralph org spawn --driver claude --seat reviewer    # Start a Claude Code seat
+ralph org spawn --driver codex  --seat verifier    # Start a Codex seat
+ralph org send  --seat reviewer "TYPE: TASK\n..."  # Send a task
+ralph org wait  --seat reviewer                    # Wait for completion
+ralph org read  --seat reviewer                    # Read the latest message
+ralph org stop  --seat reviewer                    # Stop a seat
+ralph org disband                                  # Stop all seats
+ralph status                                       # List active seats
 ```
 
-### `ralph.toml` org 設定
+### `ralph.toml`  Org Configuration
 
 ```toml
 [org]
 driver_pool      = ["claude", "codex"]
 model_pool       = [
-  { driver = "claude", model = "opus" },    # 判断・レビュー系
-  { driver = "claude", model = "sonnet" },  # 実装系
-  { driver = "codex",  model = "gpt-5.5" }, # 検証系
+  { driver = "claude", model = "opus" },    # Decision-making and review
+  { driver = "claude", model = "sonnet" },  # Implementation
+  { driver = "codex",  model = "gpt-5.5" }, # Verification
 ]
 max_seats        = 5
 deadman_minutes  = 10
@@ -315,7 +253,7 @@ agmsg_home       = "~/.agents/skills/agmsg"
 
 [org.permissions]
 default          = "default"
-codex_verified   = false   # true: codex に広い権限を付与
+codex_verified   = false   # true: grant broader permissions to Codex
 
 [org.budget]
 seat_wall_clock_minutes  = 30
@@ -323,57 +261,32 @@ total_wall_clock_minutes = 120
 max_fix_rounds           = 3
 ```
 
-### Claude Code + Codex 橋渡し
+### Claude Code + Codex Bridging
 
-`/cross-review` スキルで、一方が実装してもう一方がレビューする非同期ワークフローが使えます：
+The `/cross-review` skill enables an asynchronous workflow in which one model implements and the other reviews:
 
 ```
-Claude が実装 → Codex がレビュー
-Codex が実装  → Claude がレビュー
+Claude implements → Codex reviews
+Codex implements  → Claude reviews
 ```
 
-org ランタイムなしでも `/cross-review` 単体で動作します。
+`/cross-review` also works independently of the org runtime.
 
 ---
 
-## モデルルーティング
+## Model Routing
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  orchestrator  │  ユーザー選択モデル（セッション）    │
-│  reviewer      │  opus   — 判断・評価                │
-│  verifier      │  sonnet — 検証・テスト・実装         │
+┌──────────────────────────────────────────────────────┐
+│  orchestrator  │  User-selected model (session)      │
+│  reviewer      │  opus — decisions and evaluation    │
+│  verifier      │  sonnet — verification, tests, impl │
 │  implementer   │  sonnet                             │
-│  bulk lookups  │  haiku  — grep / ファイル調査        │
-└─────────────────────────────────────────────────────┘
+│  bulk lookups  │  haiku  — grep / file inspection    │
+└──────────────────────────────────────────────────────┘
 ```
 
-> エージェント frontmatter に `model:` を必ず明示する。省略すると継承になり、高価なモデルが想定外に多重起動される。
-
----
-
-## 開発
-
-```sh
-git clone https://github.com/thomas0124/ralph
-cd ralph
-go build ./cmd/ralph
-./ralph version
-```
-
-```sh
-# Go テスト
-go test -race ./...
-go vet ./...
-
-# シェルスクリプトテスト（25 本）
-./tests/test-secret-scan.sh
-./tests/test-ralph-dispatch.sh
-./tests/test-check-mojibake.sh
-# ...
-```
-
----
+> Important: Always declare model: explicitly in agent frontmatter. Omitting it causes inheritance and can unintentionally launch more expensive models multiple times.
 
 ## ライセンス
 
