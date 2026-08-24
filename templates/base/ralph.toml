@@ -6,6 +6,10 @@ require_claude_cli = true
 # the codex binary is missing. The accompanying `.codex/config.toml` is loaded
 # only when `codex trust .` has been run for this project; see .codex/README.md.
 require_codex_cli = false
+# OpenCode is optional by default — set to true to fail `ralph doctor` when
+# the opencode binary is missing. Only meaningful if you opt in to opencode
+# org seats (see [org] driver_pool below).
+require_opencode_cli = false
 require_go = false
 
 # [org] — envelope config for the `ralph org` verb set (spawn / send / wait /
@@ -18,6 +22,17 @@ driver_pool = ["claude", "codex"]
 # model_pool entries are CLI-native model names/aliases, passed verbatim to
 # `claude --model` / `codex --model` (aliases don't go stale like full model
 # IDs would). Each entry's driver must be present in driver_pool above.
+#
+# OpenCode seats are opt-in: add "opencode" to driver_pool and matching
+# model_pool entries. OpenCode models use the provider/model form and are
+# passed verbatim to `opencode run --model`:
+#
+#   driver_pool = ["claude", "codex", "opencode"]
+#   model_pool = [
+#     ...,
+#     { driver = "opencode", model = "opencode/big-pickle" },
+#   ]
+#
 model_pool = [
   { driver = "claude", model = "opus" },
   { driver = "claude", model = "sonnet" },
@@ -42,11 +57,13 @@ agmsg_home = "~/.agents/skills/agmsg"
 # [org.permissions] controls the seat permission-mode envelope: how much
 # autonomy a spawned seat's driver runs with, translated to driver-native
 # flags at spawn time (claude: --permission-mode bypassPermissions|
-# acceptEdits|<none>). Modes: autonomous (no interactive prompts) | edits
+# acceptEdits|<none>; opencode: autonomous -> `opencode run --auto`).
+# Modes: autonomous (no interactive prompts) | edits
 # (auto-accept file edits, still prompts otherwise) | guarded (the driver
 # CLI's own interactive default). codex seats only accept guarded today --
 # codex's interactive permission flags are fail-closed until live-verified
-# (see docs/tech-debt/README.md).
+# (see docs/tech-debt/README.md). opencode seats accept autonomous/guarded;
+# edits fails closed (OpenCode's run CLI has no edits-equivalent flag).
 [org.permissions]
 default = "autonomous"
 # codex_verified gates codex seats' autonomous/edits permission modes:

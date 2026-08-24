@@ -17,9 +17,10 @@ type Config struct {
 
 // DoctorConfig holds doctor check settings.
 type DoctorConfig struct {
-	RequireClaudeCLI bool `toml:"require_claude_cli"`
-	RequireCodexCLI  bool `toml:"require_codex_cli"`
-	RequireGo        bool `toml:"require_go"`
+	RequireClaudeCLI   bool `toml:"require_claude_cli"`
+	RequireCodexCLI    bool `toml:"require_codex_cli"`
+	RequireOpencodeCLI bool `toml:"require_opencode_cli"`
+	RequireGo          bool `toml:"require_go"`
 }
 
 // OrgConfig holds the `[org]` envelope settings consumed by the `ralph org`
@@ -134,9 +135,10 @@ type OrgWatchdogConfig struct {
 func Default() Config {
 	return Config{
 		Doctor: DoctorConfig{
-			RequireClaudeCLI: true,
-			RequireCodexCLI:  false,
-			RequireGo:        false,
+			RequireClaudeCLI:   true,
+			RequireCodexCLI:    false,
+			RequireOpencodeCLI: false,
+			RequireGo:          false,
 		},
 		Org: OrgConfig{
 			DriverPool: []string{"claude", "codex"},

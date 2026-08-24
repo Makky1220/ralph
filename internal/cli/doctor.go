@@ -102,36 +102,39 @@ func runDoctorFull(targetDir string, probeModels, strict bool) error {
 	// Check 2: Codex.
 	results = append(results, checkCodexCLI(cfg))
 
-	// Check 3: Codex hook wiring ([features] hooks; hooks.json schema + dispatcher routing; stale config.toml [hooks] table).
+	// Check 3: OpenCode.
+	results = append(results, checkOpencodeCLI(cfg))
+
+	// Check 4: Codex hook wiring ([features] hooks; hooks.json schema + dispatcher routing; stale config.toml [hooks] table).
 	results = append(results, checkCodexEffectiveConfig(targetDir))
 
-	// Check 4: Hooks integrity.
+	// Check 5: Hooks integrity.
 	results = append(results, checkHooks(targetDir))
 
-	// Check 5: Manifest version.
+	// Check 6: Manifest version.
 	results = append(results, checkManifestVersion(targetDir))
 
-	// Check 6: Language pack verify.sh (checks project's installed packs via manifest).
+	// Check 7: Language pack verify.sh (checks project's installed packs via manifest).
 	results = append(results, checkInstalledPacks(targetDir)...)
 
-	// Check 7: Go availability.
+	// Check 8: Go availability.
 	results = append(results, checkGo(cfg))
 
-	// Check 8: herdr availability (org runtime driver adapter).
+	// Check 9: herdr availability (org runtime driver adapter).
 	results = append(results, checkHerdrAvailable())
 
-	// Check 9: agmsg availability (org runtime driver adapter).
+	// Check 10: agmsg availability (org runtime driver adapter).
 	results = append(results, checkAgmsgAvailable(driver.ResolveAgmsgHome(cfg.Org.AgmsgHome)))
 
-	// Check 10: [org] envelope summary (pool size / max_seats).
+	// Check 11: [org] envelope summary (pool size / max_seats).
 	results = append(results, checkOrgEnvelope(cfg))
 
-	// Check 11: optional model-pool probes (--probe-models).
+	// Check 12: optional model-pool probes (--probe-models).
 	if probeModels {
 		results = append(results, checkOrgModelProbes(cfg, driver.ExecRunner{})...)
 	}
 
-	// Check 12: FR-9 scaffold integrity (core hashes, managed blocks,
+	// Check 13: FR-9 scaffold integrity (core hashes, managed blocks,
 	// settings.json owned keys, conflict markers, manifest/disk
 	// consistency). Always runs (findings are warnings by default); strict
 	// controls only whether a violation is reported as "fail". See
@@ -240,6 +243,28 @@ func checkCodexCLI(cfg config.Config) checkResult {
 		} else {
 			r.Status = "warn"
 			r.Detail = fmt.Sprintf("codex unusable (not required): %v", err)
+		}
+		return r
+	}
+	r.Status = "pass"
+	r.Detail = version
+	return r
+}
+
+// checkOpencodeCLI mirrors checkCodexCLI for the OpenCode CLI: `opencode
+// --version` must succeed (probeBinary's LookPath + 5s timeout), gated by
+// [doctor].require_opencode_cli (default false — OpenCode is an opt-in org
+// driver, so absence is a warn, not a fail).
+func checkOpencodeCLI(cfg config.Config) checkResult {
+	r := checkResult{Name: "OpenCode"}
+	version, err := probeBinary("opencode")
+	if err != nil {
+		if cfg.Doctor.RequireOpencodeCLI {
+			r.Status = "fail"
+			r.Detail = fmt.Sprintf("opencode unusable: %v", err)
+		} else {
+			r.Status = "warn"
+			r.Detail = fmt.Sprintf("opencode unusable (not required): %v", err)
 		}
 		return r
 	}

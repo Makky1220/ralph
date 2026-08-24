@@ -91,6 +91,10 @@ var (
 // codex seat is at least honest about running guarded. See
 // docs/tech-debt/README.md for the live-verification follow-up
 // CodexVerified closes out once an operator has actually confirmed it.
+//
+// opencode maps autonomous to its documented `--auto` run flag (no
+// verification gate needed) and guarded to no flag; edits has no
+// OpenCode CLI equivalent, so it fails closed like an unknown mode.
 func permissionArgsForDriver(cfg config.OrgConfig, driver, mode string) ([]string, error) {
 	switch driver {
 	case "claude":
@@ -118,6 +122,22 @@ func permissionArgsForDriver(cfg config.OrgConfig, driver, mode string) ([]strin
 				return codexEditsArgs, nil
 			}
 			return nil, fmt.Errorf("org: codex seat permission mode %q not yet live-verified; only guarded is allowed (fail-closed; set [org.permissions].codex_verified=true after live-verifying your codex CLI's flags)", mode)
+		default:
+			return nil, fmt.Errorf("org: unknown permission mode %q for driver %q", mode, driver)
+		}
+	case "opencode":
+		switch mode {
+		case PermissionModeGuarded:
+			return nil, nil
+		case PermissionModeAutonomous:
+			// `--auto` is OpenCode's own documented run flag ("auto-approve
+			// permissions that are not explicitly denied"), the direct
+			// counterpart of claude's bypassPermissions. Unlike codex's
+			// sandbox/approval flags it needs no operator verification
+			// gate: it is public CLI surface, not an assumed flag shape.
+			return []string{"--auto"}, nil
+		case PermissionModeEdits:
+			return nil, fmt.Errorf("org: opencode seat permission mode %q not supported; only autonomous or guarded (OpenCode's run CLI has no edits-equivalent flag)", mode)
 		default:
 			return nil, fmt.Errorf("org: unknown permission mode %q for driver %q", mode, driver)
 		}
