@@ -31,6 +31,20 @@ func TestProbeModel_CodexArgv(t *testing.T) {
 	}
 }
 
+func TestProbeModel_OpencodeArgv(t *testing.T) {
+	f := &fakeRunner{outputs: []string{"pong"}}
+
+	// OpenCode models are provider/model pairs passed verbatim to
+	// `opencode run --model`.
+	if err := ProbeModel(context.Background(), f, "opencode", "anthropic/claude-sonnet-4-5"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"run", "--model", "anthropic/claude-sonnet-4-5", "ping"}
+	if c := f.lastCall(); c.name != "opencode" || !reflect.DeepEqual(c.args, want) {
+		t.Fatalf("argv mismatch: got name=%q args=%v, want name=opencode args=%v", c.name, c.args, want)
+	}
+}
+
 func TestProbeModel_RunnerErrorSurfacesDetail(t *testing.T) {
 	f := &fakeRunner{errs: []error{errTest}}
 

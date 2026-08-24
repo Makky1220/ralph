@@ -15,6 +15,10 @@ import (
 // so a ProbeModel failure for drv=="codex" is advisory, not fatal -- the
 // caller (checkOrgModelProbes in internal/cli/doctor.go, wired into
 // `ralph doctor --probe-models`) decides how to surface that severity.
+//
+// opencode models use the provider/model form (e.g.
+// "anthropic/claude-sonnet-4-5") and are passed verbatim to `opencode run
+// --model`; a failure is reported as a plain warn (no advisory special-case).
 func ProbeModel(ctx context.Context, r Runner, drv, model string) error {
 	switch drv {
 	case "claude":
@@ -27,7 +31,12 @@ func ProbeModel(ctx context.Context, r Runner, drv, model string) error {
 			return fmt.Errorf("probe codex model %q: %w", model, err)
 		}
 		return nil
+	case "opencode":
+		if _, err := r.Run(ctx, "opencode", "run", "--model", model, "ping"); err != nil {
+			return fmt.Errorf("probe opencode model %q: %w", model, err)
+		}
+		return nil
 	default:
-		return fmt.Errorf("probe: unknown driver %q (want claude|codex)", drv)
+		return fmt.Errorf("probe: unknown driver %q (want claude|codex|opencode)", drv)
 	}
 }

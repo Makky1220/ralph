@@ -161,6 +161,7 @@ ralph doctor --probe-models
 |-------------|------|
 | Claude CLI | Required/warn-only behavior controlled by `require_claude_cli` |
 | Codex CLI | Required when `require_codex_cli = true` |
+| OpenCode CLI | Required when `require_opencode_cli = true` (for org runtime opencode driver users) |
 | Go | Required when `require_go = true` |
 | settings.json | Validates hook configuration |
 | Hook scripts | Checks executable bits |
@@ -175,9 +176,10 @@ Configure these requirements in `ralph.toml` :
 
 ```toml
 [doctor]
-require_claude_cli = true   # false: warn only
-require_codex_cli  = false  # true: require Codex CLI
-require_go         = false  # true: require Go
+require_claude_cli   = true   # false: warn only
+require_codex_cli    = false  # true: require Codex CLI
+require_opencode_cli = false  # true: require OpenCode CLI
+require_go           = false  # true: require Go
 ```
 
 ---
@@ -200,7 +202,7 @@ ralph insights backfill     # Generate historical data from docs/reports/
 
 ## Org Runtime — Autonomous Multi-Seat Execution
 
-The `org` runtime combines **herdr** (terminal pane management) and **agmsg** (typed messaging) to run multiple AI seats in parallel. Claude Code and Codex can be mixed in the same runtime.
+The `org` runtime combines **herdr** (terminal pane management) and **agmsg** (typed messaging) to run multiple AI seats in parallel. Claude Code, Codex, and OpenCode can be mixed in the same runtime. OpenCode is opt-in (see `driver_pool` below).
 
 ### Prerequisites
 
@@ -219,7 +221,7 @@ ralph doctor
 lead (Claude Code)
   ├── seat: implementer  (driver: claude / codex)
   ├── seat: reviewer     (driver: claude)
-  └── seat: tester       (driver: codex)
+  └── seat: tester       (driver: codex / opencode)
 ```
 
 The lead seat dispatches tasks to individual seats and coordinates their RESULT messages. Seats are launched as terminal panes by `herdr` ; seat-to-seat communication uses agmsg message types such as `TASK` , `RESULT` , `BLOCKED` , `REVIEW` , and `QUESTION` .
@@ -227,14 +229,15 @@ The lead seat dispatches tasks to individual seats and coordinates their RESULT 
 ### `ralph org`  Commands
 
 ```sh
-ralph org spawn --driver claude --seat reviewer    # Start a Claude Code seat
-ralph org spawn --driver codex  --seat verifier    # Start a Codex seat
-ralph org send  --seat reviewer "TYPE: TASK\n..."  # Send a task
-ralph org wait  --seat reviewer                    # Wait for completion
-ralph org read  --seat reviewer                    # Read the latest message
-ralph org stop  --seat reviewer                    # Stop a seat
-ralph org disband                                  # Stop all seats
-ralph status                                       # List active seats
+ralph org spawn --driver claude   --seat reviewer    # Start a Claude Code seat
+ralph org spawn --driver codex    --seat verifier    # Start a Codex seat
+ralph org spawn --driver opencode --seat tester      # Start an OpenCode seat (opt-in)
+ralph org send  --seat reviewer "TYPE: TASK\n..."    # Send a task
+ralph org wait  --seat reviewer                      # Wait for completion
+ralph org read  --seat reviewer                      # Read the latest message
+ralph org stop  --seat reviewer                      # Stop a seat
+ralph org disband                                    # Stop all seats
+ralph status                                         # List active seats
 ```
 
 ### `ralph.toml`  Org Configuration
@@ -260,6 +263,26 @@ seat_wall_clock_minutes  = 30
 total_wall_clock_minutes = 120
 max_fix_rounds           = 3
 ```
+
+#### Using OpenCode as a seat (opt-in)
+
+Add `"opencode"` to `driver_pool` and a `provider/model` entry to `model_pool`.
+The model name is passed verbatim to `opencode run --model`.
+
+```toml
+[org]
+driver_pool = ["claude", "codex", "opencode"]
+model_pool = [
+  # ...,
+  { driver = "opencode", model = "anthropic/claude-sonnet-4-5" },
+]
+
+[doctor]
+require_opencode_cli = false   # true: require OpenCode CLI
+```
+
+Permission mode mapping: autonomous → `--auto` , guarded → no flag. `edits`
+has no equivalent in OpenCode's run CLI and fails closed (error).
 
 ### Claude Code + Codex Bridging
 

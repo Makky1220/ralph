@@ -165,3 +165,53 @@ func TestPermissionArgsForDriver_Codex_VerifiedUnlocksMapping(t *testing.T) {
 		}
 	})
 }
+
+func TestPermissionArgsForDriver_Opencode(t *testing.T) {
+	t.Run("autonomous maps to --auto with no verification gate", func(t *testing.T) {
+		got, err := permissionArgsForDriver(config.OrgConfig{}, "opencode", "autonomous")
+		if err != nil {
+			t.Fatalf("permissionArgsForDriver(opencode, autonomous): unexpected error %v", err)
+		}
+		want := []string{"--auto"}
+		if len(got) != len(want) {
+			t.Fatalf("permissionArgsForDriver(opencode, autonomous) = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("permissionArgsForDriver(opencode, autonomous) = %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("guarded is allowed with no flags", func(t *testing.T) {
+		got, err := permissionArgsForDriver(config.OrgConfig{}, "opencode", "guarded")
+		if err != nil {
+			t.Fatalf("permissionArgsForDriver(opencode, guarded): unexpected error %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("permissionArgsForDriver(opencode, guarded) = %v, want no flags", got)
+		}
+	})
+
+	t.Run("edits fails closed (no CLI equivalent)", func(t *testing.T) {
+		_, err := permissionArgsForDriver(config.OrgConfig{}, "opencode", "edits")
+		if err == nil {
+			t.Fatal("permissionArgsForDriver(opencode, edits): expected fail-closed error, got nil")
+		}
+		if !strings.Contains(err.Error(), "not supported") || !strings.Contains(err.Error(), "edits-equivalent") {
+			t.Errorf("expected fail-closed error to mention non-support and the missing edits flag, got %v", err)
+		}
+	})
+
+	// Mirrors the codex branch's distinct-wording pin: a genuinely unknown
+	// mode must not be folded into the edits fail-closed message.
+	t.Run("an unknown mode is reported distinctly from the fail-closed case", func(t *testing.T) {
+		_, err := permissionArgsForDriver(config.OrgConfig{}, "opencode", "not-a-real-mode")
+		if err == nil {
+			t.Fatal("permissionArgsForDriver(opencode, not-a-real-mode): expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown permission mode") {
+			t.Errorf("expected an 'unknown permission mode' error, got %v", err)
+		}
+	})
+}
