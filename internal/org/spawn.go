@@ -639,8 +639,22 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 	// order the argv tests assert on exactly. A guarded-mode seat has
 	// permArgs == nil, so agentArgs starts out identical to pre-permission-
 	// mode behavior.
+	//
+	// The launch prompt is driver-dependent: claude/codex take it as a
+	// trailing positional argument (pre-filled into their input box, never
+	// auto-submitted). opencode must NOT carry any prompt element here --
+	// its --prompt flag auto-submits the message at startup, so the TUI
+	// stays busy until the whole turn finishes and herdr's interactive-
+	// ready detection never fires within AgentStart's timeout (observed
+	// live against opencode 1.18.21: a short prompt squeaks through, the
+	// multi-KB role instruction always times out; and opencode treats bare
+	// positionals as its [project] directory). Instead, opencode seats are
+	// launched bare and the prompt line is typed into the settled input box
+	// right after agent_start (the "initial_prompt" step below), mirroring
+	// org send's delivery.
 	agentArgs := append([]string{}, permArgs...)
 	agentArgs = append(agentArgs, "--model", p.Model)
+	promptLine := ""
 	agentStartedDetails := "agent_started"
 	if initialPrompt != "" {
 		if needsPromptFile(initialPrompt) {
@@ -651,10 +665,13 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 			if err := writePromptFile(promptPath, initialPrompt); err != nil {
 				return o.failStep(p, "prompt_file", err, paneID)
 			}
-			agentArgs = append(agentArgs, promptFilePointer(promptPath))
+			promptLine = promptFilePointer(promptPath)
 			agentStartedDetails = fmt.Sprintf("agent_started prompt_file=%s", promptPath)
 		} else {
-			agentArgs = append(agentArgs, initialPrompt)
+			promptLine = initialPrompt
+		}
+		if p.Driver != "opencode" {
+			agentArgs = append(agentArgs, promptLine)
 		}
 	}
 	retries, err := o.agentStartWithRetry(ctx, herdrAgentName(p.OrgID, p.SeatID), p.Driver, paneID, p.TimeoutMS, agentArgs)
@@ -673,6 +690,27 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 		PaneID: paneID, Details: agentStartedDetails,
 	}); err != nil {
 		return SpawnResult{Outcome: SpawnOutcomeFailed, Err: err}
+	}
+
+	// opencode's launch-prompt delivery (see the AC-2 comment above for why
+	// the prompt cannot ride on argv): AgentStart returning successfully
+	// means herdr saw the TUI interactive-ready, i.e. opencode rests at its
+	// input box -- type the prompt line and press Enter, exactly how org
+	// send delivers messages (verbs.go Send). A failure here compensates
+	// like any other post-tab step (failStep C-cs the pane).
+	if p.Driver == "opencode" && promptLine != "" {
+		if err := o.Herdr.PaneSendText(ctx, paneID, promptLine); err != nil {
+			return o.failStep(p, "initial_prompt", err, paneID)
+		}
+		if err := o.Herdr.PaneSendKeys(ctx, paneID, "Enter"); err != nil {
+			return o.failStep(p, "initial_prompt", err, paneID)
+		}
+		if err := o.appendEvent(ManifestEvent{
+			TS: o.now(), OrgID: p.OrgID, SeatID: p.SeatID, Event: EventSpawnStep,
+			PaneID: paneID, Details: "initial_prompt_delivered",
+		}); err != nil {
+			return SpawnResult{Outcome: SpawnOutcomeFailed, Err: err}
+		}
 	}
 
 	// leadSelfSpawn is true exactly when this Spawn call's own SeatID is the

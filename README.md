@@ -284,6 +284,12 @@ require_opencode_cli = false   # true: require OpenCode CLI
 Permission mode mapping: autonomous → `--auto` , guarded → no flag. `edits`
 has no equivalent in OpenCode's run CLI and fails closed (error).
 
+Initial prompts are driver-dependent: Claude/Codex seats receive them as a
+trailing positional argument at launch (pre-filled, never auto-submitted).
+OpenCode seats launch bare and the prompt line is typed into the input box
+once herdr reports the TUI ready — OpenCode's `--prompt` flag auto-submits,
+which would keep the seat busy past herdr's readiness detection.
+
 ### Claude Code + Codex Bridging
 
 The `/cross-review` skill enables an asynchronous workflow in which one model implements and the other reviews:
