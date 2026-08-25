@@ -666,7 +666,11 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 				return o.failStep(p, "prompt_file", err, paneID)
 			}
 			promptLine = promptFilePointer(promptPath)
-			agentStartedDetails = fmt.Sprintf("agent_started prompt_file=%s", promptPath)
+			// opencode は prompt を argv で渡さず TUI で配送するため、
+			// prompt_file= は記録しない（配送は initial_prompt_delivered ステップに委ねる）。
+			if p.Driver != "opencode" {
+				agentStartedDetails = fmt.Sprintf("agent_started prompt_file=%s", promptPath)
+			}
 		} else {
 			promptLine = initialPrompt
 		}
@@ -699,6 +703,11 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 	// send delivers messages (verbs.go Send). A failure here compensates
 	// like any other post-tab step (failStep C-cs the pane).
 	if p.Driver == "opencode" && promptLine != "" {
+		// PR③ live smoke: AgentStart 完了 ≠ TUI が入力受付可能。
+		// AgentWait で確実に idle/done 状態を確認してからテキストを送る。
+		if _, err := o.Herdr.AgentWait(ctx, herdrAgentName(p.OrgID, p.SeatID), []string{"idle", "done"}, p.TimeoutMS); err != nil {
+			return o.failStep(p, "initial_prompt", err, paneID)
+		}
 		if err := o.Herdr.PaneSendText(ctx, paneID, promptLine); err != nil {
 			return o.failStep(p, "initial_prompt", err, paneID)
 		}
@@ -709,7 +718,7 @@ func (o *Org) Spawn(p SpawnParams) SpawnResult {
 			TS: o.now(), OrgID: p.OrgID, SeatID: p.SeatID, Event: EventSpawnStep,
 			PaneID: paneID, Details: "initial_prompt_delivered",
 		}); err != nil {
-			return SpawnResult{Outcome: SpawnOutcomeFailed, Err: err}
+			return o.failStep(p, "initial_prompt", err, paneID)
 		}
 	}
 
