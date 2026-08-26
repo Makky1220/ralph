@@ -42,6 +42,8 @@ type fakeHerdr struct {
 	paneID      string
 
 	sendKeysCalls    []string   // paneIDs PaneSendKeys was invoked with, in order
+	sendKeysNames    [][]string // key names passed to each PaneSendKeys call, in order
+	sendTextCalls    []string   // text bodies PaneSendText delivered, in order
 	agentStartNames  []string   // agent names AgentStart was invoked with, in order
 	agentStartArgs   [][]string // agentArgs AgentStart was invoked with, in order (AC-4 argv assertions)
 	agentWaitTargets []string   // targets AgentWait was invoked with, in order
@@ -108,18 +110,20 @@ func (f *fakeHerdr) PaneRead(_ context.Context, _ string, _ int) (string, error)
 	return "pane output", nil
 }
 
-func (f *fakeHerdr) PaneSendText(_ context.Context, _, _ string) error {
+func (f *fakeHerdr) PaneSendText(_ context.Context, _ string, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "pane_send_text")
+	f.sendTextCalls = append(f.sendTextCalls, text)
 	return nil
 }
 
-func (f *fakeHerdr) PaneSendKeys(_ context.Context, paneID string, _ ...string) error {
+func (f *fakeHerdr) PaneSendKeys(_ context.Context, paneID string, keys ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "pane_send_keys")
 	f.sendKeysCalls = append(f.sendKeysCalls, paneID)
+	f.sendKeysNames = append(f.sendKeysNames, keys)
 	if f.paneSendKeysErr != nil {
 		return f.paneSendKeysErr
 	}
@@ -1308,6 +1312,251 @@ func TestOrgSpawn_UnknownRole_NoPromptFlag_NoPromptArgAtAll(t *testing.T) {
 	// [--permission-mode bypassPermissions --model <model>] with no prompt element.
 	if len(args) != 4 {
 		t.Fatalf("expected AgentStart args [--permission-mode bypassPermissions --model <model>] with no prompt element, got %v", args)
+	}
+}
+
+// testOrgWithOpencode is testOrg with "opencode" added to the driver pool
+// and a matching model_pool entry, for tests that spawn opencode seats.
+func testOrgWithOpencode(t *testing.T) (*Org, *fakeHerdr, *fakeAgmsg) {
+	t.Helper()
+	dir := t.TempDir()
+	h := &fakeHerdr{}
+	a := &fakeAgmsg{}
+	cfg := testOrgConfig()
+	cfg.DriverPool = append(cfg.DriverPool, "opencode")
+	cfg.ModelPool = append(cfg.ModelPool, config.OrgModelPoolEntry{Driver: "opencode", Model: "big-pickle"})
+	o := &Org{
+		Config:   cfg,
+		Manifest: NewManifestStoreAtPath(ManifestPathIn(dir)),
+		Receipts: NewReceiptStoreAtPath(filepath.Join(dir, "receipts.jsonl")),
+		Herdr:    h,
+		Agmsg:    a,
+	}
+	return o, h, a
+}
+
+func TestOrgSpawn_OpencodeDriver_NoLaunchPromptArg_TypedAfterReady(t *testing.T) {
+	// opencode must launch with NO prompt element at all: --prompt
+	// auto-submits at startup, so the TUI stays busy until the whole turn
+	// finishes and herdr's interactive-ready detection never fires within
+	// AgentStart's timeout (observed live against opencode 1.18.21 with the
+	// multi-KB role instruction; bare positionals are its [project]
+	// directory). Instead the prompt line is typed into the settled input
+	// box right after agent_start, mirroring org send's delivery.
+	t.Run("short inline prompt", func(t *testing.T) {
+		o, h, _ := testOrgWithOpencode(t)
+
+		p := mustSpawnParams("org-a", "seat-1")
+		p.Driver = "opencode"
+		p.Model = "big-pickle"
+		p.Role = "not-a-known-role"
+		p.Prompt = "verbatim prompt"
+		if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+			t.Fatalf("expected opencode spawn to succeed, got %+v", r)
+		}
+
+		args := h.agentStartArgs[0]
+		// [--auto --model big-pickle] exactly: default resolved permission
+		// mode is autonomous -> opencode maps to --auto (permissions.go).
+		if len(args) != 3 || args[0] != "--auto" || args[1] != "--model" || args[2] != "big-pickle" {
+			t.Fatalf("expected AgentStart args [--auto --model big-pickle] with no prompt element, got %v", args)
+		}
+		if len(h.sendTextCalls) != 1 || h.sendTextCalls[0] != "verbatim prompt" {
+			t.Fatalf("expected the inline prompt typed into the pane after agent_start, got %v", h.sendTextCalls)
+		}
+	})
+
+	t.Run("long prompt rides as file pointer", func(t *testing.T) {
+		o, h, _ := testOrgWithOpencode(t)
+
+		p := mustSpawnParams("org-a", "seat-1")
+		p.Driver = "opencode"
+		p.Model = "big-pickle"
+		p.Role = "reviewer" // multi-line rendered template -> needsPromptFile path
+		p.Scope = "internal/org/**"
+		if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+			t.Fatalf("expected opencode spawn to succeed, got %+v", r)
+		}
+
+		args := h.agentStartArgs[0]
+		if len(args) != 3 || args[0] != "--auto" || args[1] != "--model" || args[2] != "big-pickle" {
+			t.Fatalf("expected AgentStart args [--auto --model big-pickle] with no prompt element, got %v", args)
+		}
+
+		// The pointer line is what gets typed, not the full template body.
+		if len(h.sendTextCalls) != 1 {
+			t.Fatalf("expected exactly one PaneSendText delivery, got %v", h.sendTextCalls)
+		}
+		typed := h.sendTextCalls[0]
+		if strings.Contains(typed, "\n") || !strings.HasPrefix(typed, "役割指示を読み込んで従ってください: ") {
+			t.Fatalf("expected a single-line file pointer to be typed, got %q", typed)
+		}
+		promptPath := strings.TrimPrefix(typed, "役割指示を読み込んで従ってください: ")
+		data, err := os.ReadFile(promptPath)
+		if err != nil {
+			t.Fatalf("expected the prompt file to exist at %q: %v", promptPath, err)
+		}
+		for _, want := range []string{"org-a", "seat-1", "reviewer", "internal/org/**"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("expected the prompt file content to contain %q", want)
+			}
+		}
+	})
+}
+
+func TestOrgSpawn_OpencodeDriver_InitialPromptDelivery_IsTypedTextPlusEnter(t *testing.T) {
+	// The delivery must mirror org send exactly (verbs.go Send):
+	// AgentWait(["idle","done"]), then PaneSendText(line) then
+	// PaneSendKeys("Enter") -- and the manifest must record an
+	// initial_prompt_delivered step between agent_started and the agmsg steps
+	// so a failed delivery is auditable from the manifest alone.
+	o, h, _ := testOrgWithOpencode(t)
+
+	p := mustSpawnParams("org-a", "seat-1")
+	p.Driver = "opencode"
+	p.Model = "big-pickle"
+	p.Role = "not-a-known-role"
+	p.Prompt = "verbatim prompt"
+	if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+		t.Fatalf("expected opencode spawn to succeed, got %+v", r)
+	}
+
+	// AgentWait must be called before PaneSendText to confirm the TUI is
+	// idle/done (PR③ live smoke: AgentStart completion ≠ TUI ready).
+	if len(h.agentWaitTargets) != 1 || h.agentWaitTargets[0] != herdrAgentName("org-a", "seat-1") {
+		t.Fatalf("expected AgentWait called with namespaced agent name before PaneSendText, got %v", h.agentWaitTargets)
+	}
+
+	if len(h.sendKeysNames) != 1 || len(h.sendKeysNames[0]) != 1 || h.sendKeysNames[0][0] != "Enter" {
+		t.Fatalf("expected exactly one PaneSendKeys(Enter) after the typed prompt, got %v", h.sendKeysNames)
+	}
+
+	// The manifest must record an initial_prompt_delivered step between
+	// agent_started and the agmsg steps so a failed delivery stays
+	// auditable from the manifest alone.
+	rr, err := o.Manifest.Read()
+	if err != nil {
+		t.Fatalf("manifest read: %v", err)
+	}
+	var order []string
+	for _, ev := range rr.Events {
+		if ev.SeatID != "seat-1" || ev.Event != EventSpawnStep {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(ev.Details, "agent_started"):
+			order = append(order, "agent_started")
+		case ev.Details == "initial_prompt_delivered":
+			order = append(order, "initial_prompt_delivered")
+		case strings.HasPrefix(ev.Details, "agmsg_joined"):
+			order = append(order, "agmsg_joined")
+		case ev.Details == "agmsg_announced":
+			order = append(order, "agmsg_announced")
+		}
+	}
+	want := []string{"agent_started", "initial_prompt_delivered", "agmsg_joined", "agmsg_announced"}
+	if len(order) != len(want) {
+		t.Fatalf("expected spawn steps %v, got %v (full manifest: %+v)", want, order, rr.Events)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("expected spawn steps %v, got %v", want, order)
+		}
+	}
+}
+
+// TestOrgSpawn_OpencodeDriver_PromptFile_OmitsAgentStartedDetails covers
+// Finding #3: when needsPromptFile is true for an opencode seat, the
+// agent_started step must NOT record prompt_file= in its Details because
+// opencode delivers the prompt via TUI typing (initial_prompt_delivered),
+// not via argv. Non-opencode drivers still record prompt_file= because the
+// pointer IS passed as a trailing positional argument.
+func TestOrgSpawn_OpencodeDriver_PromptFile_OmitsAgentStartedDetails(t *testing.T) {
+	t.Run("opencode omits prompt_file", func(t *testing.T) {
+		o, _, _ := testOrgWithOpencode(t)
+
+		p := mustSpawnParams("org-a", "seat-1")
+		p.Driver = "opencode"
+		p.Model = "big-pickle"
+		p.Role = "reviewer" // multi-line rendered template -> needsPromptFile path
+		p.Scope = "internal/org/**"
+		if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+			t.Fatalf("expected opencode spawn to succeed, got %+v", r)
+		}
+
+		rr, err := o.Manifest.Read()
+		if err != nil {
+			t.Fatalf("manifest read: %v", err)
+		}
+		for _, ev := range rr.Events {
+			if ev.Event == EventSpawnStep && strings.HasPrefix(ev.Details, "agent_started") {
+				if strings.Contains(ev.Details, "prompt_file=") {
+					t.Fatalf("expected opencode agent_started to omit prompt_file= (delivered via TUI, not argv), got %q", ev.Details)
+				}
+				return
+			}
+		}
+		t.Fatal("expected an agent_started spawn_step event in the manifest")
+	})
+
+	t.Run("claude still records prompt_file", func(t *testing.T) {
+		o, _, _ := testOrg(t)
+
+		p := mustSpawnParams("org-a", "seat-1")
+		p.Role = "reviewer"
+		p.Scope = "internal/org/**"
+		if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+			t.Fatalf("expected claude spawn to succeed, got %+v", r)
+		}
+
+		rr, err := o.Manifest.Read()
+		if err != nil {
+			t.Fatalf("manifest read: %v", err)
+		}
+		for _, ev := range rr.Events {
+			if ev.Event == EventSpawnStep && strings.HasPrefix(ev.Details, "agent_started") {
+				if !strings.Contains(ev.Details, "prompt_file=") {
+					t.Fatalf("expected claude agent_started to record prompt_file= (delivered via argv), got %q", ev.Details)
+				}
+				return
+			}
+		}
+		t.Fatal("expected an agent_started spawn_step event in the manifest")
+	})
+}
+
+func TestOrgSpawn_NonOpencodeDrivers_KeepBarePositionalPrompt(t *testing.T) {
+	// Unchanged-behavior guard: only opencode moves its prompt onto --prompt;
+	// claude/codex still carry it as a trailing positional argument. Codex
+	// runs guarded here so the permission mapping stays out of the way of
+	// what this test actually pins (the argv shape).
+	for _, tc := range []struct{ driver, model string }{
+		{driver: "claude", model: "sonnet"},
+		{driver: "codex", model: "gpt-5-codex"},
+	} {
+		t.Run(tc.driver, func(t *testing.T) {
+			o, h, _ := testOrg(t)
+			o.Config.Permissions.Default = "guarded"
+
+			p := mustSpawnParams("org-a", "seat-1")
+			p.Driver = tc.driver
+			p.Model = tc.model
+			p.Role = "not-a-known-role"
+			p.Prompt = "verbatim prompt"
+			if r := o.Spawn(p); r.Outcome != SpawnOutcomeSpawned {
+				t.Fatalf("expected %s spawn to succeed, got %+v", tc.driver, r)
+			}
+
+			args := h.agentStartArgs[0]
+			if len(args) == 0 || args[len(args)-1] != "verbatim prompt" {
+				t.Fatalf("expected %s argv to end with the bare positional prompt, got %v", tc.driver, args)
+			}
+			for _, a := range args {
+				if a == "--prompt" {
+					t.Fatalf("expected no --prompt flag in %s argv, got %v", tc.driver, args)
+				}
+			}
+		})
 	}
 }
 
