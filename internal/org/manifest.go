@@ -344,7 +344,6 @@ func filterJSONLByOrgID(path, orgID string) (int, error) {
 		}
 		return 0, fmt.Errorf("org: open %s: %w", path, openErr)
 	}
-	defer func() { _ = f.Close() }()
 
 	var (
 		kept    [][]byte
@@ -365,8 +364,14 @@ func filterJSONLByOrgID(path, orgID string) (int, error) {
 		// be copied before the next Scan() clobbers it.
 		kept = append(kept, append([]byte(nil), line...))
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, fmt.Errorf("org: scan %s: %w", path, err)
+	scanErr := scanner.Err()
+	// Close the input before Remove/Rename so platforms that refuse
+	// unlinking an open file (notably Windows) succeed.
+	if err := f.Close(); err != nil && scanErr == nil {
+		return 0, fmt.Errorf("org: close %s: %w", path, err)
+	}
+	if scanErr != nil {
+		return 0, fmt.Errorf("org: scan %s: %w", path, scanErr)
 	}
 	if removed == 0 {
 		return 0, nil
@@ -385,8 +390,11 @@ func filterJSONLByOrgID(path, orgID string) (int, error) {
 	}
 	tmpName := tmp.Name()
 	done := false
+	closed := false
 	defer func() {
-		_ = tmp.Close()
+		if !closed {
+			_ = tmp.Close()
+		}
 		if !done {
 			_ = os.Remove(tmpName)
 		}
@@ -400,8 +408,10 @@ func filterJSONLByOrgID(path, orgID string) (int, error) {
 		return 0, fmt.Errorf("org: sync temp for %s: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {
+		closed = true
 		return 0, fmt.Errorf("org: close temp for %s: %w", path, err)
 	}
+	closed = true
 	if err := os.Rename(tmpName, path); err != nil {
 		return 0, fmt.Errorf("org: rename temp onto %s: %w", path, err)
 	}

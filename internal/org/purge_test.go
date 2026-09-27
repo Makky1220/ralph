@@ -252,3 +252,35 @@ func TestOrgPurge_NoEventsForOrg_Noop(t *testing.T) {
 		t.Errorf("expected manifest untouched by a no-op purge, %d -> %d", eventsBefore, got)
 	}
 }
+
+// TestOrgPurge_UnreadableManifest_ReportsIOError pins that a manifest
+// open/read failure is surfaced as an I/O error, not mislabeled as
+// "not disbanded" (operators must not re-disband an already-torn-down org
+// when the real problem is permissions or disk).
+func TestOrgPurge_UnreadableManifest_ReportsIOError(t *testing.T) {
+	o, _, _ := testOrg(t)
+	if r := o.Spawn(mustSpawnParams("org-a", "seat-1")); r.Outcome != SpawnOutcomeSpawned {
+		t.Fatalf("spawn failed: %+v", r)
+	}
+	if res := o.Disband(DisbandParams{OrgID: "org-a"}); len(res.Errs) != 0 {
+		t.Fatalf("disband failed: %v", res.Errs)
+	}
+
+	manifestPath := o.Manifest.Path()
+	if err := os.Chmod(manifestPath, 0o000); err != nil {
+		t.Fatalf("Chmod manifest: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(manifestPath, 0o644) })
+
+	result := o.Purge(PurgeParams{OrgID: "org-a"})
+	if result.Err == nil {
+		t.Fatal("expected purge of an unreadable manifest to fail")
+	}
+	errMsg := result.Err.Error()
+	if strings.Contains(errMsg, "not disbanded") {
+		t.Errorf("I/O failure must not be labeled 'not disbanded', got: %v", result.Err)
+	}
+	if !strings.Contains(errMsg, "open") {
+		t.Errorf("expected error to mention open failure, got: %v", result.Err)
+	}
+}

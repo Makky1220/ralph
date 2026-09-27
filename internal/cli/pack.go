@@ -161,9 +161,11 @@ skip the guard that refuses to remove a pack containing a forked
 // The manifest is treated as the source of truth and written FIRST: if the
 // manifest write fails, removePack returns before touching the filesystem, so
 // a failed removal never leaves the manifest disagreeing with the disk. The
-// filesystem sweep afterwards is best-effort for already-absent targets (a
-// pack dir or rule missing on disk is not an error — the manifest cleanup has
-// already completed, so an absent file is litter, not drift).
+// filesystem sweep afterwards is best-effort: an already-absent pack dir or
+// rule is not an error, and a delete failure is reported as a warning on
+// stderr rather than a hard error — the manifest cleanup has already
+// completed, so leftover files are litter, not drift. Callers can re-run
+// after fixing permissions, or remove the litter by hand.
 //
 // Guards (matching the surrounding fail-closed conventions):
 //   - A legacy (pre-v2) manifest is refused with errLegacyLayoutFailClosed via
@@ -245,20 +247,22 @@ func removePack(targetDir, lang string, force bool) (int, error) {
 		return 0, fmt.Errorf("writing manifest: %w", err)
 	}
 
-	// Filesystem sweep. os.RemoveAll returns nil for an already-absent path.
+	// Filesystem sweep (best-effort after a successful manifest write).
+	// os.RemoveAll returns nil for an already-absent path.
 	if err := os.RemoveAll(packDir); err != nil {
-		return 0, fmt.Errorf("removing pack directory %s: %w", packDir, err)
+		fmt.Fprintf(os.Stderr, "warning: removing pack directory %s: %v (manifest already updated)\n", packDir, err)
 	}
 	ruleFile := filepath.Join(absDir, filepath.FromSlash(ruleKey))
 	if err := os.Remove(ruleFile); err != nil && !os.IsNotExist(err) {
-		return 0, fmt.Errorf("removing rule file %s: %w", ruleFile, err)
+		fmt.Fprintf(os.Stderr, "warning: removing rule file %s: %v (manifest already updated)\n", ruleFile, err)
 	}
 	// removeIfEmpty returns error for absent dirs (swallowed below).
+	// Stop at .claude/rules — never tidy .claude itself, which may hold
+	// settings.json, hooks/, or other tools' state unrelated to this pack.
 	_ = removeIfEmpty(filepath.Join(absDir, "packs", "languages"))
 	_ = removeIfEmpty(filepath.Join(absDir, "packs"))
 	_ = removeIfEmpty(filepath.Join(absDir, ".claude", "rules", "ralph"))
 	_ = removeIfEmpty(filepath.Join(absDir, ".claude", "rules"))
-	_ = removeIfEmpty(filepath.Join(absDir, ".claude"))
 
 	return len(keys), nil
 }

@@ -429,12 +429,21 @@ func (o *Org) Purge(p PurgeParams) PurgeResult {
 	stateDir := filepath.Dir(o.Manifest.Path())
 	var result PurgeResult
 
-	if !p.Force && !o.hasRealDisbandedEvent(p.OrgID) {
-		return PurgeResult{Err: fmt.Errorf(
-			"org: purge: org %q is not disbanded (run `ralph org disband` first, or pass --force)", p.OrgID)}
-	}
-
 	err := withManifestLock(stateDir, func() error {
+		// Disbanded gate runs under the same lock as the rewrite so a
+		// concurrent writer cannot clear the evidence between check and
+		// delete (TOCTOU). --force skips the gate.
+		if !p.Force {
+			ok, err := o.hasRealDisbandedEvent(p.OrgID)
+			if err != nil {
+				return fmt.Errorf("org: purge: %w", err)
+			}
+			if !ok {
+				return fmt.Errorf(
+					"org: purge: org %q is not disbanded (run `ralph org disband` first, or pass --force)", p.OrgID)
+			}
+		}
+
 		events, err := filterJSONLByOrgID(o.Manifest.Path(), p.OrgID)
 		result.EventsRemoved = events
 		if err != nil {
@@ -480,17 +489,18 @@ func (o *Org) Purge(p PurgeParams) PurgeResult {
 // disbanded gate (`--force` skips it) checks for. A dry-run
 // `disband --dry-run` event deliberately does not count: it only ever
 // deactivated dry-run seat entries, so it cannot evidence a real org
-// teardown. A manifest read error is treated as "not disbanded" (fail
-// closed: Purge must not delete on an unreadable manifest).
-func (o *Org) hasRealDisbandedEvent(orgID string) bool {
+// teardown. A manifest read error is returned as-is so callers can
+// distinguish I/O failure from a genuine "not disbanded" refusal (fail
+// closed on delete still holds: Purge does not proceed when this errors).
+func (o *Org) hasRealDisbandedEvent(orgID string) (bool, error) {
 	rr, err := o.Manifest.Read()
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, ev := range rr.Events {
 		if ev.OrgID == orgID && ev.SeatID == "" && ev.Event == EventDisbanded && !ev.DryRun {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

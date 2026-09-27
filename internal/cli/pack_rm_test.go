@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -399,5 +400,108 @@ func TestPackRm_CLI_RemovesInstalledPack(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "packs", "languages", "golang")); !os.IsNotExist(err) {
 		t.Errorf("pack dir must be gone after CLI rm; stat err = %v", err)
+	}
+}
+
+// TestRemovePack_FSDeleteFailure_WarnsAndSucceeds pins the best-effort
+// filesystem sweep: once the manifest has been updated, a subsequent
+// RemoveAll failure must not hard-error (that would leave orphaned files
+// unreachable via a second `pack rm`, since Meta.Packs no longer lists the
+// pack). Instead the call succeeds and warns on stderr.
+func TestRemovePack_FSDeleteFailure_WarnsAndSucceeds(t *testing.T) {
+	setupTestEmbedFS(t)
+	Version = "0.1.0-test"
+
+	dir := t.TempDir()
+	cfg := initConfig{ProjectName: "test", Packs: nil}
+	if err := executeInit(dir, cfg, false); err != nil {
+		t.Fatalf("executeInit: %v", err)
+	}
+	lang := "golang"
+	if err := addPack(dir, lang); err != nil {
+		t.Fatalf("addPack(%q): %v", lang, err)
+	}
+
+	packDir := filepath.Join(dir, "packs", "languages", lang)
+	if err := os.Chmod(packDir, 0o555); err != nil {
+		t.Fatalf("Chmod packDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(packDir, 0o755) })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	removed, rmErr := removePack(dir, lang, false)
+	_ = w.Close()
+	os.Stderr = oldStderr
+	var stderrBuf bytes.Buffer
+	_, _ = stderrBuf.ReadFrom(r)
+	_ = r.Close()
+	stderr := stderrBuf.String()
+
+	if rmErr != nil {
+		t.Fatalf("removePack after FS delete failure: expected nil error, got %v", rmErr)
+	}
+	if removed == 0 {
+		t.Error("removePack returned 0 manifest entries removed")
+	}
+	if !strings.Contains(stderr, "warning: removing pack directory") {
+		t.Errorf("expected stderr warning about pack directory, got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "manifest already updated") {
+		t.Errorf("expected stderr to mention manifest already updated, got:\n%s", stderr)
+	}
+
+	m, err := scaffold.ReadManifest(filepath.Join(dir, ".ralph", "manifest.toml"))
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if slices.Contains(m.Meta.Packs, lang) {
+		t.Errorf("Meta.Packs still lists %q after successful manifest-first rm: %v", lang, m.Meta.Packs)
+	}
+}
+
+// TestRemovePack_EmptyClaudeDir_Survives verifies that removePack never
+// tidies .claude itself away, even when the pack rule was the only content
+// under it (settings.json / hooks absent).
+func TestRemovePack_EmptyClaudeDir_Survives(t *testing.T) {
+	setupTestEmbedFS(t)
+	Version = "0.1.0-test"
+
+	dir := t.TempDir()
+	cfg := initConfig{ProjectName: "test", Packs: nil}
+	if err := executeInit(dir, cfg, false); err != nil {
+		t.Fatalf("executeInit: %v", err)
+	}
+	lang := "golang"
+	if err := addPack(dir, lang); err != nil {
+		t.Fatalf("addPack(%q): %v", lang, err)
+	}
+
+	// Strip everything under .claude except the pack rule tree so the only
+	// reason .claude exists after tidy would be if we incorrectly removed it.
+	claudeDir := filepath.Join(dir, ".claude")
+	entries, err := os.ReadDir(claudeDir)
+	if err != nil {
+		t.Fatalf("ReadDir .claude: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "rules" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(claudeDir, e.Name())); err != nil {
+			t.Fatalf("RemoveAll %s: %v", e.Name(), err)
+		}
+	}
+
+	if _, err := removePack(dir, lang, false); err != nil {
+		t.Fatalf("removePack(%q): %v", lang, err)
+	}
+
+	if _, err := os.Stat(claudeDir); err != nil {
+		t.Errorf(".claude must survive pack rm even when empty; stat err = %v", err)
 	}
 }
