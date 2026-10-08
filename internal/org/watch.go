@@ -556,13 +556,9 @@ func (w *watchRun) evaluateCycle(ctx context.Context, orgID string, status *watc
 			continue
 		}
 		w.evaluateSeat(ctx, status, orgID, s, now, rr.Events)
+		w.checkDeadman(ctx, status, rr, now)
 	}
 
-	rr2, err := w.org.Manifest.Read()
-	if err != nil {
-		return fmt.Errorf("org: watch: re-read manifest: %w", err)
-	}
-	w.checkDeadman(ctx, status, rr2, now)
 
 	status.LastCycleTS = now.UTC().Format(time.RFC3339)
 	status.Cycles++
